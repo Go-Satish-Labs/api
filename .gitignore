@@ -1,0 +1,29 @@
+.env
+
+# Python environments and generated files
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local runtime and test data
+*.db
+*.sqlite
+*.sqlite3
+storage_data/
+test_storage_data/
+
+# Node dependencies and build output
+node_modules/
+dist/
+build/
+
+# Local editor and OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
