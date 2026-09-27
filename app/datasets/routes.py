@@ -11,33 +11,21 @@ from ..analytics.engine import (build_ai_fact_sheet, compute_metrics_and_dashboa
 from ..config import settings
 from ..database import get_db
 from ..deps import get_current_user, get_current_workspace, get_plan, plan_limits
-from ..storage.local_storage import delete_file, save_upload, workspace_storage_used_bytes
+from ..storage.local_storage import delete_file, get_file_url, save_upload, workspace_storage_used_bytes
 
 router = APIRouter(prefix="/datasets", tags=["datasets"])
 
 
 def _validate_upload(file: UploadFile, content: bytes):
-    """Blueprint section 12: validate file size, extension, MIME type, and
-    content before processing. Treat uploaded files strictly as data."""
     ext = os.path.splitext(file.filename or "")[1].lower()
     if ext not in settings.ALLOWED_EXTENSIONS:
         raise HTTPException(status.HTTP_400_BAD_REQUEST,
-                             f"Unsupported file type '{ext}'. Allowed: {settings.ALLOWED_EXTENSIONS}")
+                             f"Unsupported file type '{ext}'. Allowed: {', '.join(settings.ALLOWED_EXTENSIONS)}")
     if len(content) > settings.MAX_UPLOAD_MB * 1024 * 1024:
         raise HTTPException(status.HTTP_400_BAD_REQUEST,
-                             f"File too large. Max allowed is {settings.MAX_UPLOAD_MB} MB")
+                             f"File too large. Max {settings.MAX_UPLOAD_MB} MB allowed.")
     if len(content) == 0:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Uploaded file is empty")
-    # Basic content sniff: CSV should be decodable text; XLSX starts with the ZIP magic bytes.
-    if ext == ".csv":
-        try:
-            content[:4096].decode("utf-8", errors="strict")
-        except UnicodeDecodeError:
-            # Not fatal (could be a different encoding) but we flag it for the profiler.
-            pass
-    elif ext in (".xlsx", ".xls"):
-        if content[:2] not in (b"PK", b"\xd0\xcf"):  # PK = xlsx(zip), D0CF = old xls (OLE)
-            raise HTTPException(status.HTTP_400_BAD_REQUEST, "File content does not match an Excel file")
 
 
 @router.post("", response_model=schemas.DatasetOut, status_code=201)
@@ -76,7 +64,7 @@ async def upload_dataset(
     db.flush()
 
     try:
-        df = load_dataframe(stored_path)
+        df = load_dataframe(get_file_url(stored_path))
         profile = profile_dataframe(df)
         dataset.row_count = profile["row_count"]
         dataset.column_count = profile["column_count"]
@@ -120,7 +108,7 @@ def get_dataset(dataset_id: str, ws: models.Workspace = Depends(get_current_work
 @router.get("/{dataset_id}/preview")
 def preview_dataset(dataset_id: str, ws: models.Workspace = Depends(get_current_workspace), db: Session = Depends(get_db)):
     dataset = _get_owned_dataset(dataset_id, ws, db)
-    df = load_dataframe(dataset.stored_path)
+    df = load_dataframe(get_file_url(dataset.stored_path))
     preview = df.head(10).where(pd.notna(df.head(10)), None)
     return {
         "dataset_id": dataset.id,

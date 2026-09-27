@@ -1,43 +1,64 @@
 """
-Local disk storage, standing in for Supabase Storage / S3.
+Supabase Storage integration.
 
-Kept behind a tiny interface (save/read/delete/path) so swapping in real
-object storage later means changing this one file, not the routes that use it.
-Files are stored under a per-workspace folder — never in a public path, and
-never resolved from a client-supplied path (prevents path traversal).
+Files are stored under a per-workspace folder in the Supabase bucket.
 """
 import os
 import uuid
 
 from ..config import settings
 
+_supabase = None
 
-def _workspace_dir(workspace_id: str) -> str:
-    path = os.path.join(settings.STORAGE_DIR, workspace_id)
-    os.makedirs(path, exist_ok=True)
-    return path
+
+def _get_client():
+    """Lazily create the Supabase client so the server doesn't crash at
+    startup if the package is momentarily unavailable.
+
+    Storage writes use the service_role key so they bypass Storage RLS;
+    the anon key would be blocked by the default "new row violates
+    row-level security policy" policy on every upload.
+    """
+    global _supabase
+    if _supabase is None:
+        from supabase import create_client  # noqa: PLC0415
+        key = settings.SUPABASE_SERVICE_ROLE_KEY or settings.SUPABASE_KEY
+        _supabase = create_client(settings.SUPABASE_URL, key)
+    return _supabase
 
 
 def save_upload(workspace_id: str, original_filename: str, content: bytes) -> tuple[str, int]:
-    """Saves bytes under a server-generated filename (never the client's raw
-    filename) to avoid path traversal / overwrite issues. Returns (stored_path, size)."""
+    """Saves bytes to Supabase Storage. Returns (stored_path, size_bytes)."""
     ext = os.path.splitext(original_filename)[1].lower()
-    safe_name = f"{uuid.uuid4().hex}{ext}"
-    full_path = os.path.join(_workspace_dir(workspace_id), safe_name)
-    with open(full_path, "wb") as f:
-        f.write(content)
-    return full_path, len(content)
+    safe_name = f"{workspace_id}/{uuid.uuid4().hex}{ext}"
+    _get_client().storage.from_(settings.STORAGE_DIR).upload(safe_name, content)
+    return safe_name, len(content)
+
+
+def get_file_url(stored_path: str) -> str:
+    """Returns a signed URL (60 s) so pandas can download the file from Supabase."""
+    try:
+        res = _get_client().storage.from_(settings.STORAGE_DIR).create_signed_url(stored_path, 60)
+        return res["signedURL"] if isinstance(res, dict) else res.get("signedURL")
+    except Exception:
+        return _get_client().storage.from_(settings.STORAGE_DIR).get_public_url(stored_path)
 
 
 def delete_file(stored_path: str) -> None:
-    if os.path.exists(stored_path):
-        os.remove(stored_path)
+    try:
+        _get_client().storage.from_(settings.STORAGE_DIR).remove([stored_path])
+    except Exception:
+        pass
 
 
 def workspace_storage_used_bytes(workspace_id: str) -> int:
-    path = _workspace_dir(workspace_id)
-    total = 0
-    for dirpath, _, filenames in os.walk(path):
-        for name in filenames:
-            total += os.path.getsize(os.path.join(dirpath, name))
-    return total
+    try:
+        files = _get_client().storage.from_(settings.STORAGE_DIR).list(workspace_id)
+        return sum(
+            f.get("metadata", {}).get("size", 0)
+            for f in files
+            if f.get("name") != ".emptyFolderPlaceholder"
+        )
+    except Exception:
+        return 0
+

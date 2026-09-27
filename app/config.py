@@ -15,9 +15,25 @@ class Settings(BaseSettings):
     SECRET_KEY: str = "dev-secret-change-me"
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 1440
-    # PostgreSQL belongs in .env. SQLite remains available only for local tests.
+    # PostgreSQL belongs in .env (never hard-code credentials here - this file is
+    # committed). SQLite stays as the zero-config default so a fresh clone works.
     DATABASE_URL: str = "sqlite:///./analytics_app.db"
-    STORAGE_DIR: str = "./storage_data"
+    # Postgres resilience: fail fast (seconds, not minutes) when the DB is away.
+    DB_CONNECT_TIMEOUT_SECONDS: int = 8
+    DB_POOL_TIMEOUT_SECONDS: int = 8
+    DB_POOL_RECYCLE_SECONDS: int = 300
+    # Local-dev safety net: if DATABASE_URL is unreachable, serve from a local
+    # SQLite file instead of answering every request with 503. Off by default -
+    # opting in from production would silently write rows to the wrong database,
+    # so Brain/.env turns it on while the Supabase DSN is being repaired.
+    DB_SQLITE_FALLBACK: bool = False
+    DB_SQLITE_FALLBACK_URL: str = "sqlite:///./analytics_app.db"
+    SUPABASE_URL: str = ""
+    SUPABASE_KEY: str = ""
+    # Server-side storage writes must bypass Storage RLS, so they use the
+    # service_role key (never the anon key). Never expose this to the client.
+    SUPABASE_SERVICE_ROLE_KEY: str = ""
+    STORAGE_DIR: str = "datasets"
     CORS_ORIGINS: str = "http://localhost:5173"
 
     # Firebase ID tokens are verified by the API before workspace-scoped queries run.
@@ -50,7 +66,7 @@ class Settings(BaseSettings):
     ANTHROPIC_API_KEY: str = ""
 
     # Upload validation
-    ALLOWED_EXTENSIONS: tuple = (".csv", ".xlsx", ".xls")
+    ALLOWED_EXTENSIONS: tuple = (".csv", ".xlsx", ".xls", ".txt", ".json", ".html", ".htm", ".xml")
     MAX_UPLOAD_MB: int = 25
 
 
