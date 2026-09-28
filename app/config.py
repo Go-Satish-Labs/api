@@ -34,7 +34,10 @@ class Settings(BaseSettings):
     # service_role key (never the anon key). Never expose this to the client.
     SUPABASE_SERVICE_ROLE_KEY: str = ""
     STORAGE_DIR: str = "datasets"
-    CORS_ORIGINS: str = "http://localhost:5173"
+    CORS_ORIGINS: str = (
+        "http://localhost:5173,http://127.0.0.1:5173,"
+        "https://analytrix-mocha.vercel.app"
+    )
 
     # Firebase ID tokens are verified by the API before workspace-scoped queries run.
     # AUTH_MODE=local exists only for tests and offline development.
