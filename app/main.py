@@ -47,10 +47,24 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+def _allowed_origins() -> list[str]:
+    """Normalise CORS_ORIGINS into the exact strings browsers send.
+
+    Starlette matches ``Origin`` against this list with a plain string
+    comparison, and browsers always send a scheme+host with no trailing
+    slash. An env value pasted as ``https://app.example.com/`` therefore
+    never matches and every preflight fails with a bare 400 that carries no
+    ``Access-Control-Allow-Origin`` header - indistinguishable from a broken
+    deploy. Stripping trailing slashes here makes both spellings work.
+    """
+    raw = [origin.strip() for origin in settings.CORS_ORIGINS.split(",")]
+    return [origin.rstrip("/") for origin in raw if origin]
+
+
 # In production, restrict this to the actual web/desktop/mobile client origins.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[origin.strip() for origin in settings.CORS_ORIGINS.split(",") if origin.strip()],
+    allow_origins=_allowed_origins(),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
