@@ -114,6 +114,26 @@ class PredictOptionsResponse(BaseModel):
     hint: str
 
 
+# ---------- Feedback ----------
+class FeedbackCreate(BaseModel):
+    category: str = "general"
+    rating: Optional[int] = Field(default=None, ge=1, le=5)
+    message: str = Field(min_length=1, max_length=4000)
+    # The page the user was on. A route name, not a filename.
+    context: Optional[str] = None
+
+
+class FeedbackOut(BaseModel):
+    id: str
+    category: str
+    rating: Optional[int] = None
+    message: str
+    status: str
+    created_at: datetime
+    class Config:
+        from_attributes = True
+
+
 # ---------- Sharing ----------
 class ShareDashboardRequest(BaseModel):
     dataset_id: str

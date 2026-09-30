@@ -15,6 +15,7 @@ from .config import settings
 from .dashboards.routes import router as dashboards_router
 from .database import create_tables, database_status, init_engine
 from .datasets.routes import router as datasets_router
+from .feedback.routes import router as feedback_router
 from .retention import purge_expired_datasets, retention_notice
 from .workspaces.routes import router as workspaces_router
 
@@ -142,6 +143,7 @@ app.include_router(datasets_router)
 app.include_router(dashboards_router)
 app.include_router(ai_router)
 app.include_router(billing_router)
+app.include_router(feedback_router)
 
 
 @app.get("/")

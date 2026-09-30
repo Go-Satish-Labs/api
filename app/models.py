@@ -129,6 +129,31 @@ class Subscription(Base):
     user = relationship("User", back_populates="subscription")
 
 
+class Feedback(Base):
+    """Product feedback submitted from the Feedback page.
+
+    Scoped to the user and their workspace so support can answer "which
+    account is this about?" without reading anyone's uploaded data. The
+    optional `context` is a page/route name, never file contents.
+    """
+    __tablename__ = "feedback"
+
+    id = Column(String, primary_key=True, default=gen_uuid)
+    user_id = Column(String, ForeignKey("users.id"), nullable=False)
+    workspace_id = Column(String, ForeignKey("workspaces.id"), nullable=False)
+    category = Column(String, default="general")  # bug | idea | praise | general
+    rating = Column(Integer, nullable=True)  # 1-5, optional
+    message = Column(Text, nullable=False)
+    # Where the user was when they sent it, e.g. "datasets" or "ask".
+    context = Column(String, nullable=True)
+    # new | triaged | resolved | dismissed
+    status = Column(String, default="new")
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    user = relationship("User")
+    workspace = relationship("Workspace")
+
+
 class UsageLog(Base):
     """Tracks AI question usage (and could track other metered actions) per
     workspace per month, for quota enforcement (blueprint section 9 & 11)."""
