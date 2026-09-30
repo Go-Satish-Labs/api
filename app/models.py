@@ -26,6 +26,7 @@ class User(Base):
 
     workspaces = relationship("Workspace", back_populates="owner", cascade="all, delete-orphan")
     subscription = relationship("Subscription", back_populates="user", uselist=False, cascade="all, delete-orphan")
+    feedback = relationship("Feedback", back_populates="user", cascade="all, delete-orphan")
 
 
 class Workspace(Base):
@@ -42,6 +43,9 @@ class Workspace(Base):
     datasets = relationship("Dataset", back_populates="workspace", cascade="all, delete-orphan")
     dashboards = relationship("Dashboard", back_populates="workspace", cascade="all, delete-orphan")
     shared_dashboards = relationship("SharedDashboard", back_populates="workspace", cascade="all, delete-orphan")
+    # Without this, deleting a user cascades to the workspace while its feedback
+    # rows still reference it, and the database rejects the delete.
+    feedback = relationship("Feedback", back_populates="workspace", cascade="all, delete-orphan")
     usage_logs = relationship("UsageLog", back_populates="workspace", cascade="all, delete-orphan")
 
 

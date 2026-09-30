@@ -908,6 +908,13 @@ def compute_metrics_and_dashboard(df: pd.DataFrame, profile: dict[str, Any]) -> 
     # Predictions
     predictions = run_predictions(df, profile)
 
+    # Every chart carries a plain-language reading, computed from its own
+    # numbers, so a reader who cannot interpret the shape still learns what
+    # they are supposed to take from it.
+    from .narration import describe_all
+
+    charts = describe_all(charts)
+
     return {
         "kpi_cards": kpi_cards,
         "charts": charts,

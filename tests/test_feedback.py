@@ -4,30 +4,21 @@ Tests for feedback intake.
 The property worth protecting is scope: a user may read back only their own
 messages, and the stored record must not become a way to smuggle dataset
 content into a table with no retention policy attached.
-"""
-import os
-import tempfile
 
+The database is a throwaway SQLite file pinned by tests/conftest.py - setting
+DATABASE_URL here would be too late, since the engine is already initialised.
+"""
 import pytest
 
-os.environ.setdefault("AUTH_MODE", "local")
+from fastapi.testclient import TestClient
 
-from fastapi.testclient import TestClient  # noqa: E402
-
-from app.main import app  # noqa: E402
+from app.main import app
 
 
 @pytest.fixture
 def client():
-    fd, path = tempfile.mkstemp(suffix=".db")
-    os.close(fd)
-    os.environ["DATABASE_URL"] = f"sqlite:///{path}"
     with TestClient(app) as c:
         yield c
-    try:
-        os.remove(path)
-    except OSError:
-        pass
 
 
 def _register(client, email: str) -> dict:
@@ -107,3 +98,30 @@ def test_daily_limit_blocks_a_spam_run(client):
     ]
     assert statuses[:10] == [201] * 10
     assert 429 in statuses
+
+
+def test_deleting_a_user_removes_their_feedback(client):
+    """Regression: feedback rows reference the workspace, so deleting a user
+    used to cascade to the workspace while those rows still pointed at it and
+    the database rejected the whole delete."""
+    from app.database import SessionLocal
+    from app import models
+
+    headers = _register(client, "i@example.com")
+    client.post("/feedback", headers=headers, json={"message": "goodbye"})
+
+    email = "i@example.com"
+    db = SessionLocal()
+    try:
+        user = db.query(models.User).filter(models.User.email == email).first()
+        assert user is not None
+        user_id = user.id
+        db.delete(user)
+        db.commit()
+        assert db.query(models.User).filter(models.User.id == user_id).first() is None
+        # And nothing is left pointing at the removed workspace.
+        assert db.query(models.Feedback).filter(
+            models.Feedback.user_id == user_id
+        ).count() == 0
+    finally:
+        db.close()
