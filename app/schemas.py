@@ -86,6 +86,31 @@ class AskQuestionResponse(BaseModel):
     engine: str = "deterministic"
 
 
+# ---------- Prediction ----------
+class PredictRequest(BaseModel):
+    """A user-configured prediction run from the dashboard's Prediction tab."""
+    dataset_id: str
+    # What to predict. None with mode="clustering" groups rows instead.
+    target: Optional[str] = None
+    # Columns the model learns from. Empty means "use everything else".
+    features: list[str] = Field(default_factory=list)
+    # auto | classification | regression | clustering
+    mode: str = "auto"
+    n_clusters: Optional[int] = Field(default=None, ge=2, le=8)
+
+
+class PredictOptionsResponse(BaseModel):
+    is_labeled: bool
+    suggested_target: Optional[str] = None
+    suggested_mode: str = "auto"
+    date_column: Optional[str] = None
+    numeric_columns: list[str]
+    categorical_columns: list[str]
+    clusterable: bool
+    summary: str
+    hint: str
+
+
 # ---------- Billing ----------
 class CreateOrderRequest(BaseModel):
     plan: str = "premium"

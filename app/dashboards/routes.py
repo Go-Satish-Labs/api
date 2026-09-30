@@ -6,10 +6,13 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import Response, StreamingResponse
 from sqlalchemy.orm import Session
 
-from .. import models
-from ..analytics.engine import compute_metrics_and_dashboard, load_dataframe, profile_dataframe
+from .. import models, schemas
+from ..analytics.engine import (compute_metrics_and_dashboard, load_dataframe,
+                                 prediction_options, profile_dataframe,
+                                 run_targeted_prediction)
 from ..database import get_db
 from ..deps import get_current_workspace
+from ..storage.local_storage import get_file_url
 
 router = APIRouter(prefix="/dashboards", tags=["dashboards"])
 
@@ -29,6 +32,15 @@ def _refresh_dashboard_if_needed(dashboard: models.Dashboard, db: Session) -> di
     dashboard.config_json = json.dumps(config)
     db.commit()
     return config
+
+
+def _owned_dataset(dataset_id: str, ws: models.Workspace, db: Session) -> models.Dataset:
+    dataset = db.query(models.Dataset).filter(
+        models.Dataset.id == dataset_id, models.Dataset.workspace_id == ws.id
+    ).first()
+    if not dataset:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Dataset not found")
+    return dataset
 
 
 @router.get("")
@@ -70,6 +82,49 @@ def get_dashboard_by_dataset(dataset_id: str, ws: models.Workspace = Depends(get
         "config": _refresh_dashboard_if_needed(dashboard, db),
         "created_at": dashboard.created_at,
     }
+
+
+@router.get("/predict-options/{dataset_id}", response_model=schemas.PredictOptionsResponse)
+def predict_options_route(dataset_id: str, ws: models.Workspace = Depends(get_current_workspace), db: Session = Depends(get_db)):
+    """Which columns the Prediction tab should offer as a target and as inputs."""
+    dataset = _owned_dataset(dataset_id, ws, db)
+    profile = json.loads(dataset.profile_json or "{}")
+    if not profile:
+        raise HTTPException(status.HTTP_409_CONFLICT, "This dataset hasn't been profiled yet")
+    return prediction_options(profile)
+
+
+@router.post("/predict")
+def predict(payload: schemas.PredictRequest, ws: models.Workspace = Depends(get_current_workspace), db: Session = Depends(get_db)):
+    """Run the prediction the user configured in the dashboard's Prediction tab.
+
+    A bad request (unusable target, too few rows) comes back as a 200 with an
+    `error` string rather than an HTTP error, so the UI can show the reason
+    next to the controls the user needs to change.
+    """
+    dataset = _owned_dataset(payload.dataset_id, ws, db)
+    profile = json.loads(dataset.profile_json or "{}")
+    if not profile:
+        raise HTTPException(status.HTTP_409_CONFLICT, "This dataset hasn't been profiled yet")
+
+    known = {c["name"] for c in profile.get("columns", [])}
+    unknown = [f for f in payload.features if f not in known]
+    if unknown:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, f"Unknown column(s): {', '.join(unknown)}")
+    if payload.target and payload.target not in known:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, f"Unknown target column: {payload.target}")
+    if payload.target in payload.features:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "The column being predicted can't also be an input")
+
+    df = load_dataframe(get_file_url(dataset.stored_path))
+    result = run_targeted_prediction(
+        df, profile,
+        target=payload.target,
+        features=payload.features or None,
+        mode=payload.mode,
+        n_clusters=payload.n_clusters,
+    )
+    return {"prediction": result, "dataset_id": dataset.id}
 
 
 @router.get("/by-dataset/{dataset_id}/export")

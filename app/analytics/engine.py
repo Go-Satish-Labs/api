@@ -7,7 +7,7 @@ Analytics engine — extended:
 - ML: regression, classification (labeled) + clustering (unlabeled)
 """
 import re
-from typing import Any
+from typing import Any, Optional
 from urllib.parse import urlsplit
 
 import numpy as np
@@ -451,6 +451,279 @@ def run_predictions(df: pd.DataFrame, profile: dict[str, Any]) -> dict[str, Any]
         })
 
     return result
+
+
+# ── User-directed predictions ─────────────────────────────────────────────────
+
+def prediction_options(profile: dict[str, Any]) -> dict[str, Any]:
+    """What the user can choose to predict, and with which inputs.
+
+    The dashboard lets people pick their own target instead of accepting the
+    one the engine guessed, so the choices have to be derived from the actual
+    column types rather than assumed.
+    """
+    structure = profile.get("data_structure", {})
+    numeric = structure.get("numeric_columns") or [
+        c["name"] for c in profile.get("columns", []) if c.get("type") == "numeric"
+    ]
+    categorical = structure.get("categorical_columns") or [
+        c["name"] for c in profile.get("columns", []) if c.get("type") == "categorical"
+    ]
+    date_col = structure.get("date_column")
+    if date_col is None:
+        date_col = next((c["name"] for c in profile.get("columns", []) if c.get("type") == "date"), None)
+
+    is_labeled = bool(structure.get("is_labeled"))
+    return {
+        "is_labeled": is_labeled,
+        "suggested_target": structure.get("label_column"),
+        "suggested_mode": "auto",
+        "date_column": date_col,
+        "numeric_columns": numeric,
+        "categorical_columns": categorical,
+        "clusterable": bool(numeric),
+        "summary": structure.get("summary", ""),
+        "hint": (
+            "Pick the column you want to predict. The model learns the pattern "
+            "from the other columns you choose."
+            if is_labeled else
+            "This file has no obvious 'answer' column, so instead of predicting a "
+            "value we can group your rows into clusters with similar behaviour - "
+            "or pick a value column yourself to predict it."
+        ),
+    }
+
+
+def _build_feature_matrix(df: pd.DataFrame, columns: list[str]) -> pd.DataFrame:
+    """Numeric-encode a mixed set of columns into a model-ready frame."""
+    X = pd.DataFrame(index=df.index)
+    for col in columns:
+        if col not in df.columns:
+            continue
+        series = df[col]
+        if pd.api.types.is_numeric_dtype(series) or _looks_numeric(series):
+            X[col] = pd.to_numeric(series, errors="coerce")
+        else:
+            # Factorize maps each distinct value to an integer; -1 is the
+            # missing marker, which the imputer below turns into 0.
+            X[col] = pd.Series(pd.factorize(series.astype(str))[0], index=df.index)
+    return X
+
+
+def _resolve_task(target: str, series: pd.Series) -> str:
+    """A low-cardinality column is a category to predict; otherwise a value."""
+    unique = int(series.nunique(dropna=True))
+    if unique <= 2:
+        return "classification"
+    if not pd.api.types.is_numeric_dtype(series) and unique <= 20:
+        return "classification"
+    if pd.api.types.is_numeric_dtype(series) and unique <= 10 and float(series.mean() or 0).is_integer():
+        return "classification"
+    return "regression"
+
+
+def _profile_clusters(df: pd.DataFrame, labels: np.ndarray, feature_cols: list[str],
+                      max_clusters: int = 5) -> list[dict[str, Any]]:
+    """Describe each cluster in the columns that define it.
+
+    Cluster ids on their own ('Group 1 has 400 rows') tell a user nothing.
+    Naming the column that each group is highest or lowest on is what makes a
+    cluster actionable.
+    """
+    work = df[feature_cols].copy()
+    work["__cluster"] = labels
+    groups: dict[str, list[str]] = {}
+    for column in feature_cols:
+        numeric = pd.to_numeric(work[column], errors="coerce")
+        if numeric.notna().any():
+            means = numeric.groupby(work["__cluster"]).mean()
+            if len(means) > 1:
+                top = means.idxmax()
+                bottom = means.idxmin()
+                groups.setdefault(str(top), []).append(f"highest {column}")
+                if str(bottom) not in (str(top),):
+                    groups.setdefault(str(bottom), []).append(f"lowest {column}")
+    out = []
+    for cluster_id, notes in groups.items():
+        out.append({"cluster": f"Group {int(cluster_id) + 1}", "notable": notes[:3]})
+    return out[:max_clusters]
+
+
+def run_targeted_prediction(
+    df: pd.DataFrame,
+    profile: dict[str, Any],
+    target: Optional[str] = None,
+    features: Optional[list[str]] = None,
+    mode: str = "auto",
+    n_clusters: Optional[int] = None,
+) -> dict[str, Any]:
+    """Run a prediction the user configured, or fall back to the automatic one.
+
+    `mode` is auto | classification | regression | clustering. 'auto' uses the
+    chosen target's own shape to decide, and clusters when there is no usable
+    target at all.
+    """
+    try:
+        from sklearn.cluster import KMeans
+        from sklearn.ensemble import (GradientBoostingRegressor,
+                                      RandomForestClassifier,
+                                      RandomForestRegressor)
+        from sklearn.metrics import r2_score
+        from sklearn.model_selection import cross_val_score, train_test_split
+        from sklearn.preprocessing import LabelEncoder, StandardScaler
+        import warnings
+        warnings.filterwarnings("ignore")
+    except ImportError:
+        return {"error": "scikit-learn is not available on this server"}
+
+    col_types = profile.get("column_types", {})
+    numeric_cols = [c for c, t in col_types.items() if t == "numeric"]
+    if not numeric_cols:
+        return {"error": "This file has no numeric columns, so there is nothing to model."}
+
+    usable_features = [f for f in (features or []) if f in df.columns and f != target]
+    if not usable_features:
+        usable_features = [c for c in df.columns if c != target][:12]
+
+    # ── Clustering ──────────────────────────────────────────────────────────
+    if mode == "clustering" or (mode == "auto" and not target):
+        cluster_features = [c for c in numeric_cols if c in df.columns][:6]
+        if len(cluster_features) < 2:
+            return {"error": "Clustering needs at least two numeric columns."}
+        X = _build_feature_matrix(df, cluster_features).fillna(0)
+        sample = X.sample(n=min(3000, len(X)), random_state=42) if len(X) > 3000 else X
+        k = n_clusters or min(5, max(2, len(df) // 50))
+        k = max(2, min(k, 8))
+        km = KMeans(n_clusters=k, random_state=42, n_init=10)
+        labels = km.fit_predict(StandardScaler().fit_transform(sample))
+        counts = pd.Series(labels).value_counts().sort_index()
+        return {
+            "model_type": "clustering",
+            "algorithm": "K-Means Clustering",
+            "features_used": cluster_features,
+            "n_clusters": int(k),
+            "is_labeled": False,
+            "cluster_sizes": [
+                {"cluster": f"Group {i + 1}", "count": int(v)} for i, v in counts.items()
+            ],
+            "cluster_profiles": _profile_clusters(df[cluster_features], labels, cluster_features),
+            "insight": (
+                f"There is no obvious 'answer' column in this file, so instead of "
+                f"predicting a value we grouped your {len(df):,} rows into {k} groups "
+                f"that behave similarly. The largest group has {int(counts.max()):,} rows."
+            ),
+        }
+
+    if not target or target not in df.columns:
+        return {"error": "Choose a column to predict."}
+
+    task = mode if mode in ("classification", "regression") else _resolve_task(target, df[target])
+
+    X = _build_feature_matrix(df, usable_features)
+    scaler = StandardScaler()
+    base = {
+        "model_type": task,
+        "target_column": target,
+        "features_used": usable_features[:10],
+        "is_labeled": True,
+    }
+
+    if task == "classification":
+        y_raw = df[target].dropna()
+        if len(y_raw) < 10 or y_raw.nunique() < 2:
+            return {"error": f"'{target}' needs at least two different values to classify."}
+        if y_raw.nunique() > 50:
+            return {"error": f"'{target}' has {y_raw.nunique()} distinct values - too many to classify. Try predicting a coarser column."}
+        le = LabelEncoder()
+        y = le.fit_transform(y_raw.astype(str))
+        aligned = X.loc[y_raw.index].fillna(0)
+        Xs = scaler.fit_transform(aligned)
+        clf = RandomForestClassifier(n_estimators=80, max_depth=8, random_state=42, n_jobs=-1)
+        folds = min(5, int(y_raw.nunique()))
+        if folds >= 2 and len(y) >= folds * 2:
+            scores = cross_val_score(clf, Xs, y, cv=folds, scoring="accuracy")
+            accuracy = float(scores.mean())
+        else:
+            accuracy = float(clf.fit(Xs, y).score(Xs, y))
+        # cross_val_score clones the estimator per fold and never fits the one
+        # we hold, so fit a final model on everything for the importances.
+        clf.fit(Xs, y)
+        importances = sorted(
+            zip(usable_features, clf.feature_importances_), key=lambda x: x[1], reverse=True
+        )
+        # Per-class accuracy tells a naive user which class the model is worst
+        # at; a single headline number hides that.
+        per_class: list[dict[str, Any]] = []
+        try:
+            Xtr, Xte, ytr, yte = train_test_split(Xs, y, test_size=0.25, random_state=42, stratify=y)
+            clf2 = RandomForestClassifier(n_estimators=80, max_depth=8, random_state=42, n_jobs=-1)
+            clf2.fit(Xtr, ytr)
+            predicted = clf2.predict(Xte)
+            for idx, label in enumerate(le.classes_):
+                mask = yte == idx
+                if mask.sum() == 0:
+                    continue
+                per_class.append({
+                    "label": str(label),
+                    "count": int(mask.sum()),
+                    "accuracy_pct": round(float((predicted[mask] == idx).mean()) * 100, 1),
+                })
+        except Exception:  # noqa: BLE001 - per-class detail is optional
+            per_class = []
+
+        base.update({
+            "algorithm": "Random Forest Classifier",
+            "accuracy": round(accuracy, 3),
+            "accuracy_pct": round(accuracy * 100, 1),
+            "classes": [str(c) for c in le.classes_[:10]],
+            "per_class": per_class,
+            "feature_importance": [
+                {"feature": f, "importance": round(float(v), 4)} for f, v in importances[:8]
+            ],
+            "insight": (
+                f"The model predicts \"{target}\" with {round(accuracy * 100, 1)}% accuracy, "
+                f"learning from {len(usable_features)} other column"
+                f"{'' if len(usable_features) == 1 else 's'}. "
+                f"The strongest signal is \"{importances[0][0]}\"."
+            ),
+        })
+        return base
+
+    # regression
+    y_series = pd.to_numeric(df[target], errors="coerce")
+    frame = X.join(y_series.rename("__y__")).dropna(subset=["__y__"])
+    if len(frame) < 20:
+        return {"error": f"Not enough usable rows to predict '{target}' (need at least 20)."}
+    y = frame["__y__"].to_numpy(dtype=float)
+    Xs = scaler.fit_transform(frame[usable_features].fillna(0))
+    reg = GradientBoostingRegressor(n_estimators=120, max_depth=4, random_state=42)
+    Xtr, Xte, ytr, yte = train_test_split(Xs, y, test_size=0.25, random_state=42)
+    reg.fit(Xtr, ytr)
+    predicted = reg.predict(Xte)
+    r2 = float(r2_score(yte, predicted))
+    mae = float(np.mean(np.abs(yte - predicted)))
+    importances = sorted(
+        zip(usable_features, reg.feature_importances_), key=lambda x: x[1], reverse=True
+    )
+    base.update({
+        "algorithm": "Gradient Boosting Regressor",
+        "r2_score": round(r2, 3),
+        "r2_pct": round(max(r2, 0) * 100, 1),
+        "mean_absolute_error": round(mae, 4),
+        "feature_importance": [
+            {"feature": f, "importance": round(float(v), 4)} for f, v in importances[:8]
+        ],
+        "sample_predictions": [
+            {"actual": round(float(a), 2), "predicted": round(float(p), 2)}
+            for a, p in list(zip(yte[:8], predicted[:8]))
+        ],
+        "insight": (
+            f"The model explains {round(max(r2, 0) * 100, 1)}% of the variation in "
+            f"\"{target}\", with an average miss of {_sf(mae)}. "
+            f"The strongest predictor is \"{importances[0][0]}\"."
+        ),
+    })
+    return base
 
 
 # ── Dashboard computation ─────────────────────────────────────────────────────
