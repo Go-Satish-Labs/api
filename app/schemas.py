@@ -49,6 +49,9 @@ class DatasetOut(BaseModel):
     status: str
     error_message: Optional[str] = None
     created_at: datetime
+    # Hours until the file is automatically deleted, so the UI can state it
+    # per row instead of only in a one-time notice.
+    hours_until_deletion: Optional[float] = None
     class Config:
         from_attributes = True
 

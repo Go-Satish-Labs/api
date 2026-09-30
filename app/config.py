@@ -72,6 +72,11 @@ class Settings(BaseSettings):
     ALLOWED_EXTENSIONS: tuple = (".csv", ".xlsx", ".xls", ".txt", ".json", ".html", ".htm", ".xml")
     MAX_UPLOAD_MB: int = 25
 
+    # How long an uploaded file is kept before it is deleted. This single
+    # value drives both the purge job and the privacy copy shown in the UI,
+    # so the message cannot claim a different window than is enforced.
+    DATA_RETENTION_HOURS: int = 24
+
     # How long a shareable dashboard link stays live. Shared reports hold
     # aggregates only, so they can outlive the source file - but not forever.
     SHARE_LINK_EXPIRY_HOURS: int = 168

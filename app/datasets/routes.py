@@ -1,5 +1,6 @@
 import json
 import os
+from datetime import datetime
 
 import pandas as pd
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
@@ -11,6 +12,7 @@ from ..analytics.engine import (build_ai_fact_sheet, compute_metrics_and_dashboa
 from ..config import settings
 from ..database import get_db
 from ..deps import get_current_user, get_current_workspace, get_plan, plan_limits
+from ..retention import hours_remaining
 from ..storage.local_storage import delete_file, get_file_url, save_upload, workspace_storage_used_bytes
 
 router = APIRouter(prefix="/datasets", tags=["datasets"])
@@ -96,7 +98,24 @@ async def upload_dataset(
 
 @router.get("", response_model=list[schemas.DatasetOut])
 def list_datasets(ws: models.Workspace = Depends(get_current_workspace), db: Session = Depends(get_db)):
-    return db.query(models.Dataset).filter(models.Dataset.workspace_id == ws.id).order_by(models.Dataset.created_at.desc()).all()
+    """Lists datasets with the time left before each is automatically deleted.
+
+    The remaining hours are computed per row so the UI can say 'deleted in 3h'
+    rather than making the user remember a policy they read once.
+    """
+    datasets = (
+        db.query(models.Dataset)
+        .filter(models.Dataset.workspace_id == ws.id)
+        .order_by(models.Dataset.created_at.desc())
+        .all()
+    )
+    now = datetime.utcnow()
+    return [
+        schemas.DatasetOut.model_validate(
+            d, update={"hours_until_deletion": round(hours_remaining(d.created_at, now), 1)}
+        )
+        for d in datasets
+    ]
 
 
 @router.get("/{dataset_id}", response_model=schemas.DatasetProfileOut)

@@ -1,3 +1,4 @@
+import asyncio
 import sys
 from contextlib import asynccontextmanager
 
@@ -14,6 +15,7 @@ from .config import settings
 from .dashboards.routes import router as dashboards_router
 from .database import create_tables, database_status, init_engine
 from .datasets.routes import router as datasets_router
+from .retention import purge_expired_datasets, retention_notice
 from .workspaces.routes import router as workspaces_router
 
 DB_DOWN_DETAIL = (
@@ -21,9 +23,32 @@ DB_DOWN_DETAIL = (
     "(see Brain/DATABASE.md)."
 )
 
+# How often the retention sweep runs. A deployment that sleeps for hours
+# between requests still needs to delete on time, so this is a background task
+# rather than something done opportunistically per request.
+RETENTION_SWEEP_SECONDS = 3600
+
 
 def _log(message: str) -> None:
     print(f"[startup] {message}", file=sys.stderr)
+
+
+async def _retention_loop() -> None:
+    """Periodically delete datasets past the retention window."""
+    from .database import SessionLocal
+
+    while True:
+        try:
+            await asyncio.sleep(RETENTION_SWEEP_SECONDS)
+            db = SessionLocal()
+            try:
+                purge_expired_datasets(db)
+            finally:
+                db.close()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - a failed sweep must not kill the app
+            _log(f"retention sweep failed: {type(exc).__name__}: {str(exc)[:200]}")
 
 
 @asynccontextmanager
@@ -34,10 +59,29 @@ async def lifespan(_app: FastAPI):
     _log(f"database: {status['mode']} -> {status['active_url']}")
     if status["connected"] and tables_ok:
         _log("database connection and schema are ready.")
+        # Sweep once at boot so a server that was down past the deadline still
+        # deletes on the way back up, rather than waiting a full interval.
+        if status["connected"]:
+            try:
+                from .database import SessionLocal
+
+                db = SessionLocal()
+                try:
+                    removed = purge_expired_datasets(db)
+                    _log(f"retention: {settings.DATA_RETENTION_HOURS}h window, {removed} dataset(s) removed at boot")
+                finally:
+                    db.close()
+            except Exception as exc:  # noqa: BLE001
+                _log(f"retention boot sweep skipped: {type(exc).__name__}: {str(exc)[:200]}")
     else:
         _log(f"database NOT ready: {table_error or status['error']}")
         _log("the API keeps serving; DB-backed routes answer 503 until this is fixed.")
-    yield
+
+    task = asyncio.create_task(_retention_loop())
+    try:
+        yield
+    finally:
+        task.cancel()
 
 
 app = FastAPI(
@@ -128,4 +172,15 @@ def health_db():
         "status": "healthy" if status["connected"] else "unhealthy",
         "database": status,
     }
+
+
+@app.get("/privacy/retention")
+def privacy_retention():
+    """The retention window the server enforces and the copy describing it.
+
+    Public and unauthenticated on purpose: the privacy claim has to be
+    readable without an account, and it is generated from the same setting
+    that drives the purge so the two can never disagree.
+    """
+    return retention_notice()
 
