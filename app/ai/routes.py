@@ -5,9 +5,10 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
 from .. import models, schemas
-from ..analytics.engine import build_ai_fact_sheet
+from ..analytics.engine import build_ai_fact_sheet, load_dataframe
 from ..database import get_db
 from ..deps import get_current_user, get_current_workspace, get_plan, plan_limits
+from ..storage.local_storage import get_file_url
 from .service import answer_question, is_unsafe_question
 
 router = APIRouter(prefix="/ai", tags=["ai"])
@@ -61,7 +62,12 @@ def ask_your_data(
     dashboard_config = json.loads(dashboard.config_json)
     fact_sheet = build_ai_fact_sheet(profile, dashboard_config)
 
-    result = answer_question(payload.question, fact_sheet)
+    # Lazy: the service only calls this for forecast/trend questions, so a
+    # "what is the total revenue" question never re-reads the file.
+    def _load():
+        return load_dataframe(get_file_url(dataset.stored_path))
+
+    result = answer_question(payload.question, fact_sheet, df=_load)
 
     if usage:
         usage.count += 1
@@ -74,4 +80,7 @@ def ask_your_data(
     return schemas.AskQuestionResponse(
         answer=result["answer"], used_facts=result["used_facts"],
         disclaimer=result["disclaimer"], remaining_ai_questions=remaining,
+        interpretation=result.get("interpretation"),
+        forecast=result.get("forecast"),
+        engine=result.get("engine", "deterministic"),
     )

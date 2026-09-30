@@ -194,11 +194,14 @@ def detect_data_structure(df: pd.DataFrame, col_types: dict[str, str]) -> dict[s
         (c for c in df.columns if TARGET_HINTS.search(c)), None
     )
 
-    # Binary / low-cardinality categorical → likely classification label
-    binary_cats = [
-        c for c in cat_cols
-        if 2 <= df[c].nunique(dropna=True) <= 10
-    ]
+    # A label column is a *classification* target, and the only strong evidence
+    # for one without a naming hint is a genuine two-way split. Treating any
+    # low-cardinality column as a label is what previously made "Region" (four
+    # regions) the prediction target of a sales file - it is a breakdown, not
+    # something to predict, and treating it as one produced a meaningless
+    # classifier.
+    binary_cats = [c for c in cat_cols if df[c].nunique(dropna=True) == 2]
+    weak_label_cats = [c for c in cat_cols if 3 <= df[c].nunique(dropna=True) <= 10]
 
     is_labeled = bool(explicit_target or binary_cats)
     has_headers = not all(
@@ -212,10 +215,11 @@ def detect_data_structure(df: pd.DataFrame, col_types: dict[str, str]) -> dict[s
         label_col = binary_cats[0]
         label_type = "classification"
     elif numeric_cols:
-        # Pick the numeric column most correlated with others as implicit target
+        # No real label: use the most volatile numeric as a regression target
+        # but report the data as unlabeled so the UI offers clustering.
         label_col = _pick_target_numeric(df, numeric_cols)
         label_type = "regression"
-        is_labeled = False  # no explicit label — treat as unlabeled
+        is_labeled = False
     else:
         label_col = None
         label_type = None
@@ -227,7 +231,15 @@ def detect_data_structure(df: pd.DataFrame, col_types: dict[str, str]) -> dict[s
         "label_type": label_type,
         "numeric_count": len(numeric_cols),
         "categorical_count": len(cat_cols),
-        "summary": _structure_summary(is_labeled, has_headers, label_col, label_type, df),
+        # Categories available to group or cluster by, so the prediction UI can
+        # offer real choices instead of guessing a target.
+        "categorical_columns": cat_cols[:8],
+        "numeric_columns": numeric_cols[:12],
+        "date_column": next((c for c, t in col_types.items() if t == "date"), None),
+        "summary": _structure_summary(
+            is_labeled, has_headers, label_col, label_type, df,
+            weak_label_cats, binary_cats,
+        ),
     }
 
 
@@ -243,7 +255,8 @@ def _pick_target_numeric(df: pd.DataFrame, numeric_cols: list[str]) -> str:
     return max(scores, key=scores.get) if scores else numeric_cols[-1]
 
 
-def _structure_summary(is_labeled, has_headers, label_col, label_type, df) -> str:
+def _structure_summary(is_labeled, has_headers, label_col, label_type, df,
+                      weak_label_cats=(), binary_cats=()) -> str:
     parts = []
     if not has_headers:
         parts.append("Your file has no column headers — columns were auto-named.")
@@ -256,8 +269,13 @@ def _structure_summary(is_labeled, has_headers, label_col, label_type, df) -> st
     else:
         parts.append(
             "No clear target column found — treating this as unlabeled data. "
-            "We'll run clustering to find natural groups in your data."
+            "We'll group your rows into clusters to find natural patterns."
         )
+        if weak_label_cats:
+            parts.append(
+                f"You can still predict a value you choose (for example "
+                f"\"{weak_label_cats[0]}\"), or explore the groupings."
+            )
     return " ".join(parts)
 
 

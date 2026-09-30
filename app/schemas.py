@@ -78,6 +78,12 @@ class AskQuestionResponse(BaseModel):
     used_facts: dict[str, Any]
     disclaimer: str
     remaining_ai_questions: int
+    # How the question was understood, so the UI can show "you asked about X".
+    interpretation: Optional[dict[str, Any]] = None
+    # Present when the question needed a forward projection: history + forecast
+    # series the frontend can plot, plus confidence and method.
+    forecast: Optional[dict[str, Any]] = None
+    engine: str = "deterministic"
 
 
 # ---------- Billing ----------
