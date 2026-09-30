@@ -1,18 +1,22 @@
 import csv
 import io
 import json
+import secrets
+from datetime import datetime, timedelta
 
-from fastapi import APIRouter, Depends, HTTPException, status
-from fastapi.responses import Response, StreamingResponse
+from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi.responses import HTMLResponse, Response, StreamingResponse
 from sqlalchemy.orm import Session
 
 from .. import models, schemas
 from ..analytics.engine import (compute_metrics_and_dashboard, load_dataframe,
                                  prediction_options, profile_dataframe,
                                  run_targeted_prediction)
+from ..config import settings
 from ..database import get_db
 from ..deps import get_current_workspace
 from ..storage.local_storage import get_file_url
+from .html_report import render_dashboard_html
 
 router = APIRouter(prefix="/dashboards", tags=["dashboards"])
 
@@ -82,6 +86,133 @@ def get_dashboard_by_dataset(dataset_id: str, ws: models.Workspace = Depends(get
         "config": _refresh_dashboard_if_needed(dashboard, db),
         "created_at": dashboard.created_at,
     }
+
+
+@router.post("/share")
+def share_dashboard(
+    payload: schemas.ShareDashboardRequest,
+    ws: models.Workspace = Depends(get_current_workspace),
+    db: Session = Depends(get_db),
+):
+    """Render a dashboard to standalone HTML, store it, and return a share link.
+
+    The stored document is self-contained and holds only computed aggregates,
+    so the link keeps working after the uploaded file is deleted on schedule
+    and cannot be used to reach the source rows.
+    """
+    dataset = _owned_dataset(payload.dataset_id, ws, db)
+    dashboard = db.query(models.Dashboard).filter(
+        models.Dashboard.dataset_id == dataset.id,
+        models.Dashboard.workspace_id == ws.id,
+    ).first()
+
+    if payload.mode == "prediction":
+        if not payload.prediction:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST,
+                                "A prediction result is required to share a prediction dashboard")
+        prediction = payload.prediction
+    else:
+        if not dashboard:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "No dashboard generated for this dataset yet")
+        config = _refresh_dashboard_if_needed(dashboard, db)
+        prediction = None
+
+    config = _refresh_dashboard_if_needed(dashboard, db) if dashboard else {}
+    html = render_dashboard_html(
+        config,
+        title=payload.title or dashboard.title if dashboard else f"{dataset.original_filename} - Prediction",
+        mode=payload.mode,
+        prediction=prediction,
+        dataset_filename=dataset.original_filename,
+    )
+
+    share = models.SharedDashboard(
+        token=secrets.token_urlsafe(16),
+        workspace_id=ws.id,
+        dataset_id=dataset.id,
+        dashboard_id=dashboard.id if dashboard else None,
+        mode=payload.mode,
+        title=payload.title or (dashboard.title if dashboard else "Shared dashboard"),
+        config_json=json.dumps({"mode": payload.mode}),
+        html=html,
+        expires_at=datetime.utcnow() + timedelta(hours=settings.SHARE_LINK_EXPIRY_HOURS),
+    )
+    db.add(share)
+    db.commit()
+
+    return {
+        "token": share.token,
+        "url": f"/dashboards/shared/{share.token}",
+        "mode": share.mode,
+        "title": share.title,
+        "expires_at": share.expires_at,
+        "view_count": 0,
+    }
+
+
+@router.get("/shared/list")
+def list_shared(ws: models.Workspace = Depends(get_current_workspace), db: Session = Depends(get_db)):
+    rows = (
+        db.query(models.SharedDashboard)
+        .filter(models.SharedDashboard.workspace_id == ws.id)
+        .order_by(models.SharedDashboard.created_at.desc())
+        .all()
+    )
+    return [
+        {
+            "token": r.token, "mode": r.mode, "title": r.title,
+            "url": f"/dashboards/shared/{r.token}",
+            "created_at": r.created_at, "expires_at": r.expires_at,
+            "view_count": r.view_count,
+            "expired": bool(r.expires_at and r.expires_at < datetime.utcnow()),
+        }
+        for r in rows
+    ]
+
+
+@router.delete("/shared/{token}", status_code=204)
+def revoke_shared(token: str, ws: models.Workspace = Depends(get_current_workspace), db: Session = Depends(get_db)):
+    share = db.query(models.SharedDashboard).filter(
+        models.SharedDashboard.token == token,
+        models.SharedDashboard.workspace_id == ws.id,
+    ).first()
+    if not share:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Share link not found")
+    db.delete(share)
+    db.commit()
+    return None
+
+
+@router.get("/shared/{token}", response_class=HTMLResponse)
+def view_shared(token: str, request: Request, db: Session = Depends(get_db)):
+    """Serve a shared dashboard.
+
+    Deliberately unauthenticated: the unguessable token *is* the credential,
+    which is what makes the link pasteable into a chat or an email. Access is
+    still scoped - an expired or unknown token 404s rather than leaking that
+    a token ever existed.
+    """
+    share = db.query(models.SharedDashboard).filter(
+        models.SharedDashboard.token == token
+    ).first()
+    if not share:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "This share link does not exist or has been revoked")
+    if share.expires_at and share.expires_at < datetime.utcnow():
+        raise HTTPException(status.HTTP_410_GONE, "This share link has expired")
+
+    share.view_count = (share.view_count or 0) + 1
+    db.commit()
+
+    return HTMLResponse(
+        content=share.html,
+        headers={
+            # The report is a static document with no scripts; these headers
+            # stop a browser from treating a stored copy as live app state.
+            "X-Content-Type-Options": "nosniff",
+            "Referrer-Policy": "no-referrer",
+            "Cache-Control": "private, max-age=300",
+        },
+    )
 
 
 @router.get("/predict-options/{dataset_id}", response_model=schemas.PredictOptionsResponse)
@@ -156,25 +287,11 @@ def export_dashboard(dataset_id: str, fmt: str = "json", ws: models.Workspace = 
         )
 
     if fmt == "html":
-        kpi_rows = "".join(
-            f"<tr><td>{k['metric']}</td><td>{k.get('sum','')}</td><td>{k.get('average','')}</td></tr>"
-            for k in config.get("kpi_cards", [])
+        html = render_dashboard_html(
+            config, title=title, mode="history",
+            prediction=config.get("predictions"),
+            dataset_filename=dashboard.dataset.original_filename if dashboard.dataset else "",
         )
-        chart_sections = "".join(
-            f"<h3>{c['title']}</h3><table border='1'><tr><th>X</th><th>Y</th></tr>"
-            + "".join(f"<tr><td>{r.get('x','')}</td><td>{r.get('y','')}</td></tr>" for r in c.get("data", []))
-            + "</table>"
-            for c in config.get("charts", []) if c.get("data")
-        )
-        html = f"""<!DOCTYPE html><html><head><meta charset='utf-8'>
-<title>{title}</title>
-<style>body{{font-family:sans-serif;padding:24px}}table{{border-collapse:collapse;margin-bottom:24px}}td,th{{padding:6px 12px;border:1px solid #ddd}}</style>
-</head><body>
-<h1>{title}</h1>
-<h2>KPI Summary</h2>
-<table><tr><th>Metric</th><th>Total</th><th>Average</th></tr>{kpi_rows}</table>
-{chart_sections}
-</body></html>"""
         return Response(
             content=html, media_type="text/html",
             headers={"Content-Disposition": f'attachment; filename="dashboard.html"'},

@@ -72,5 +72,9 @@ class Settings(BaseSettings):
     ALLOWED_EXTENSIONS: tuple = (".csv", ".xlsx", ".xls", ".txt", ".json", ".html", ".htm", ".xml")
     MAX_UPLOAD_MB: int = 25
 
+    # How long a shareable dashboard link stays live. Shared reports hold
+    # aggregates only, so they can outlive the source file - but not forever.
+    SHARE_LINK_EXPIRY_HOURS: int = 168
+
 
 settings = Settings()

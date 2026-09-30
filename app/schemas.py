@@ -111,6 +111,17 @@ class PredictOptionsResponse(BaseModel):
     hint: str
 
 
+# ---------- Sharing ----------
+class ShareDashboardRequest(BaseModel):
+    dataset_id: str
+    # history = KPIs/charts/quality; prediction = the user's chosen model
+    mode: str = "history"
+    title: Optional[str] = None
+    # Required when mode is "prediction": the already-computed result, so the
+    # server never silently regenerates a different model than the one shown.
+    prediction: Optional[dict[str, Any]] = None
+
+
 # ---------- Billing ----------
 class CreateOrderRequest(BaseModel):
     plan: str = "premium"

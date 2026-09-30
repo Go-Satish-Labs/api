@@ -41,6 +41,7 @@ class Workspace(Base):
     owner = relationship("User", back_populates="workspaces")
     datasets = relationship("Dataset", back_populates="workspace", cascade="all, delete-orphan")
     dashboards = relationship("Dashboard", back_populates="workspace", cascade="all, delete-orphan")
+    shared_dashboards = relationship("SharedDashboard", back_populates="workspace", cascade="all, delete-orphan")
     usage_logs = relationship("UsageLog", back_populates="workspace", cascade="all, delete-orphan")
 
 
@@ -80,6 +81,34 @@ class Dashboard(Base):
 
     workspace = relationship("Workspace", back_populates="dashboards")
     dataset = relationship("Dataset", back_populates="dashboards")
+
+
+class SharedDashboard(Base):
+    """A rendered dashboard stored as a standalone HTML document so it can be
+    shared as a link.
+
+    Holds the *computed* config and the rendered HTML only - never a reference
+    to the uploaded file - so a shared link cannot be used to reach the source
+    data, and the link keeps working after the file is deleted on schedule.
+    """
+    __tablename__ = "shared_dashboards"
+
+    id = Column(String, primary_key=True, default=gen_uuid)
+    # Unguessable, because this link is public by design: anyone holding it
+    # can read the report without signing in.
+    token = Column(String, unique=True, index=True, nullable=False)
+    workspace_id = Column(String, ForeignKey("workspaces.id"), nullable=False)
+    dataset_id = Column(String, ForeignKey("datasets.id"), nullable=True)
+    dashboard_id = Column(String, ForeignKey("dashboards.id"), nullable=True)
+    mode = Column(String, default="history")  # history | prediction
+    title = Column(String, default="Shared dashboard")
+    config_json = Column(Text, default="{}")
+    html = Column(Text, nullable=False)
+    view_count = Column(Integer, default=0)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    expires_at = Column(DateTime, nullable=True)
+
+    workspace = relationship("Workspace", back_populates="shared_dashboards")
 
 
 class Subscription(Base):
