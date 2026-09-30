@@ -101,7 +101,19 @@ def _answer_forecast(
     parsed: ParsedQuestion, fact_sheet: dict[str, Any], forecast: Optional[dict[str, Any]]
 ) -> str:
     if forecast is None:
-        metric = parsed.metric or "that measure"
+        if not parsed.metric:
+            # Distinguish "I did not understand what you asked about" from "the
+            # data cannot support it" - blaming a missing date column when the
+            # real problem is an unrecognised measure sends the user hunting
+            # for the wrong thing.
+            columns = fact_sheet.get("column_names") or []
+            available = ", ".join(columns[:8])
+            return (
+                "I couldn't tell which column you want to look at. "
+                + (f"This dataset has: {available}. " if available else "")
+                + "Try naming one of them - for example \"will Units increase in the next 10 days?\"."
+            )
+        metric = parsed.metric
         return (
             f"I can't project \"{metric}\" forward from this dataset — it needs a "
             "date column with enough history to fit a trend. Open the dashboard "

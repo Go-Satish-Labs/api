@@ -110,9 +110,11 @@ def list_datasets(ws: models.Workspace = Depends(get_current_workspace), db: Ses
         .all()
     )
     now = datetime.utcnow()
+    # model_copy(update=...) rather than model_validate(..., update=...): the
+    # latter's update keyword does not exist in pydantic 2.9.
     return [
-        schemas.DatasetOut.model_validate(
-            d, update={"hours_until_deletion": round(hours_remaining(d.created_at, now), 1)}
+        schemas.DatasetOut.model_validate(d).model_copy(
+            update={"hours_until_deletion": round(hours_remaining(d.created_at, now), 1)}
         )
         for d in datasets
     ]
