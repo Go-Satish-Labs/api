@@ -30,7 +30,9 @@ def _refresh_dashboard_if_needed(dashboard: models.Dashboard, db: Session) -> di
     if not dataset or not dataset.stored_path:
         return config
 
-    df = load_dataframe(dataset.stored_path)
+    # load_dataframe reads a URL, not a storage key - passing stored_path
+    # raised "No such file or directory" and made every share fail.
+    df = load_dataframe(get_file_url(dataset.stored_path))
     profile = profile_dataframe(df)
     config = compute_metrics_and_dashboard(df, profile)
     dashboard.config_json = json.dumps(config)

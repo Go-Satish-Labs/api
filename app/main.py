@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
 from . import models  # noqa: F401 - registers every table on Base.metadata
 from .ai.routes import router as ai_router
@@ -118,6 +118,9 @@ app.add_middleware(
 
 # Pool checkout timeouts (sqlalchemy.exc.TimeoutError) subclass SQLAlchemyError,
 # so one handler covers "the database refused us" and "it never gave us a connection".
+# IntegrityError is separated out: it means the database worked fine and the
+# request violated a constraint, and reporting it as "cannot reach its database"
+# sends whoever is reading the logs to go and inspect DATABASE_URL for no reason.
 @app.exception_handler(SQLAlchemyError)
 def handle_database_error(_request: Request, exc: SQLAlchemyError) -> JSONResponse:
     """A dead database is an infrastructure state, not an application crash.
@@ -125,6 +128,15 @@ def handle_database_error(_request: Request, exc: SQLAlchemyError) -> JSONRespon
     Without this, SQLAlchemy/psycopg errors escape as a bare `500 text/plain`
     (21-byte body) that the client can only render as "something went wrong".
     """
+    if isinstance(exc, IntegrityError):
+        print(f"[database] integrity error: {type(exc).__name__}: {str(exc)[:300]}", file=sys.stderr)
+        return JSONResponse(
+            status_code=409,
+            content={
+                "detail": "That change conflicts with existing data. Please refresh and try again.",
+                "error": f"{type(exc).__name__}: {str(exc)[:300]}",
+            },
+        )
     status = database_status()
     print(f"[database] request failed: {type(exc).__name__}: {str(exc)[:300]}", file=sys.stderr)
     return JSONResponse(

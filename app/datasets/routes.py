@@ -1,5 +1,6 @@
 import json
 import os
+import sys
 from datetime import datetime
 
 import pandas as pd
@@ -143,11 +144,26 @@ def preview_dataset(dataset_id: str, ws: models.Workspace = Depends(get_current_
 @router.delete("/{dataset_id}", status_code=204)
 def delete_dataset(dataset_id: str, ws: models.Workspace = Depends(get_current_workspace), db: Session = Depends(get_db)):
     """Blueprint acceptance test: 'Deleting a dataset removes associated
-    stored data and metadata.'"""
+    stored data and metadata.'
+
+    Shared links are detached, not deleted. A shared report holds aggregates
+    only and is meant to keep working after the file is gone, so its
+    dataset_id is cleared rather than cascaded. Without this the delete raised
+    a foreign key violation on shared_dashboards_dataset_id_fkey - the row
+    still pointed at the dataset being removed - and surfaced as a 503 that
+    claimed the database was unreachable.
+    """
     dataset = _get_owned_dataset(dataset_id, ws, db)
     delete_file(dataset.stored_path)
+    detached = (
+        db.query(models.SharedDashboard)
+        .filter(models.SharedDashboard.dataset_id == dataset.id)
+        .update({models.SharedDashboard.dataset_id: None}, synchronize_session=False)
+    )
     db.delete(dataset)  # cascades to dashboards via relationship config
     db.commit()
+    if detached:
+        print(f"[datasets] detached {detached} shared link(s) from deleted dataset {dataset.id}", file=sys.stderr)
     return None
 
 
