@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import sys
 from datetime import datetime, timedelta, timezone
-from typing import Any, Optional
+from typing import Any, Optional, Optional
 
 from sqlalchemy.orm import Session
 
@@ -32,6 +32,35 @@ def retention_window() -> timedelta:
 
 def _log(message: str) -> None:
     print(f"[retention] {message}", file=sys.stderr)
+
+
+def detach_shared_links(db: Session, dataset_id: Optional[str] = None,
+                        dashboard_id: Optional[str] = None) -> int:
+    """Point shared reports away from rows that are about to be deleted.
+
+    SharedDashboard holds two nullable foreign keys back to the source data -
+    dataset_id and dashboard_id - and neither has a cascade. Removing a
+    dataset therefore cascaded to its dashboards, and the first dashboard to
+    go violated shared_dashboards_dashboard_id_fkey, so the whole delete
+    aborted. That is what made the retention sweep skip: nothing was ever
+    purged, while the UI still promised a 24 hour window.
+
+    The links are detached, not deleted. A shared report holds aggregates only
+    and is meant to keep working once the file is gone, so clearing the
+    references is the correct outcome and not a loss.
+    """
+    query = db.query(models.SharedDashboard)
+    if dataset_id:
+        query = query.filter(models.SharedDashboard.dataset_id == dataset_id)
+    if dashboard_id:
+        query = query.filter(models.SharedDashboard.dashboard_id == dashboard_id)
+    detached = query.update(
+        {models.SharedDashboard.dataset_id: None, models.SharedDashboard.dashboard_id: None},
+        synchronize_session=False,
+    )
+    if detached:
+        db.flush()
+    return detached
 
 
 def purge_expired_datasets(db: Session, now: datetime | None = None) -> int:
@@ -58,6 +87,8 @@ def purge_expired_datasets(db: Session, now: datetime | None = None) -> int:
                 delete_file(dataset.stored_path)
         except Exception as exc:  # noqa: BLE001
             _log(f"could not delete file for dataset {dataset.id}: {exc}")
+        # Clear both back-references before the cascade reaches dashboards.
+        detach_shared_links(db, dataset_id=dataset.id)
         db.delete(dataset)
 
     db.commit()

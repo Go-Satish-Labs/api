@@ -13,7 +13,7 @@ from ..analytics.engine import (build_ai_fact_sheet, compute_metrics_and_dashboa
 from ..config import settings
 from ..database import get_db
 from ..deps import get_current_user, get_current_workspace, get_plan, plan_limits
-from ..retention import hours_remaining
+from ..retention import detach_shared_links, hours_remaining
 from ..storage.local_storage import delete_file, get_file_url, save_upload, workspace_storage_used_bytes
 
 router = APIRouter(prefix="/datasets", tags=["datasets"])
@@ -146,20 +146,13 @@ def delete_dataset(dataset_id: str, ws: models.Workspace = Depends(get_current_w
     """Blueprint acceptance test: 'Deleting a dataset removes associated
     stored data and metadata.'
 
-    Shared links are detached, not deleted. A shared report holds aggregates
-    only and is meant to keep working after the file is gone, so its
-    dataset_id is cleared rather than cascaded. Without this the delete raised
-    a foreign key violation on shared_dashboards_dataset_id_fkey - the row
-    still pointed at the dataset being removed - and surfaced as a 503 that
-    claimed the database was unreachable.
+    Shared links are detached, not deleted - see retention.detach_shared_links
+    for why, and for the dashboard_id reference that also has to be cleared
+    before the cascade runs.
     """
     dataset = _get_owned_dataset(dataset_id, ws, db)
     delete_file(dataset.stored_path)
-    detached = (
-        db.query(models.SharedDashboard)
-        .filter(models.SharedDashboard.dataset_id == dataset.id)
-        .update({models.SharedDashboard.dataset_id: None}, synchronize_session=False)
-    )
+    detached = detach_shared_links(db, dataset_id=dataset.id)
     db.delete(dataset)  # cascades to dashboards via relationship config
     db.commit()
     if detached:

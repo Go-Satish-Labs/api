@@ -119,6 +119,89 @@ def test_shared_link_still_serves_after_its_dataset_is_gone(client):
         db.close()
 
 
+def test_delete_clears_the_dashboard_reference_too(client):
+    """Regression: SharedDashboard has TWO foreign keys back to the source
+    data. Clearing only dataset_id left dashboard_id pointing at a row the
+    cascade was about to remove, so the delete still failed - this is what
+    made the retention sweep skip and silently keep nothing purged."""
+    from app.database import SessionLocal
+    from app import models
+
+    headers = _account(client, "del5@example.com")
+    dataset_id = _upload(client, headers)
+
+    db = SessionLocal()
+    try:
+        dataset = db.query(models.Dataset).get(dataset_id)
+        dashboard = db.query(models.Dashboard).filter_by(dataset_id=dataset_id).first()
+        assert dashboard is not None, "upload should have created a dashboard"
+        db.add(models.SharedDashboard(
+            token="bothrefs00001", workspace_id=dataset.workspace_id,
+            dataset_id=dataset_id, dashboard_id=dashboard.id,
+            mode="history", title="t", config_json="{}", html="<p>x</p>",
+        ))
+        db.commit()
+    finally:
+        db.close()
+
+    assert client.delete(f"/datasets/{dataset_id}", headers=headers).status_code == 204
+
+    db = SessionLocal()
+    try:
+        share = db.query(models.SharedDashboard).filter_by(token="bothrefs00001").one()
+        assert share.dataset_id is None
+        assert share.dashboard_id is None
+        db.delete(share)
+        db.commit()
+    finally:
+        db.close()
+
+
+def test_retention_purge_clears_both_references(monkeypatch):
+    """The retention sweep must not be able to abort on a shared link, or the
+    24 hour deletion promise silently stops being kept."""
+    from datetime import datetime, timedelta, timezone
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from app import models
+    from app.database import Base
+    from app.retention import purge_expired_datasets
+
+    monkeypatch.setattr("app.retention.delete_file", lambda _p: None)
+
+    engine = create_engine("sqlite://", connect_args={"check_same_thread": False})
+    Base.metadata.create_all(engine)
+    session = sessionmaker(bind=engine)()
+
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    user = models.User(email="p@example.com")
+    session.add(user); session.flush()
+    workspace = models.Workspace(owner_id=user.id)
+    session.add(workspace); session.flush()
+    dataset = models.Dataset(
+        workspace_id=workspace.id, original_filename="old.csv",
+        stored_path="x/old.csv", file_size_bytes=1,
+        created_at=now - timedelta(hours=48),
+    )
+    session.add(dataset); session.flush()
+    dashboard = models.Dashboard(
+        workspace_id=workspace.id, dataset_id=dataset.id, title="d", config_json="{}",
+    )
+    session.add(dashboard); session.flush()
+    session.add(models.SharedDashboard(
+        token="purgeboth0001", workspace_id=workspace.id,
+        dataset_id=dataset.id, dashboard_id=dashboard.id,
+        mode="history", title="t", config_json="{}", html="<p>x</p>",
+    ))
+    session.commit()
+
+    assert purge_expired_datasets(session) == 1
+    assert session.query(models.Dataset).count() == 0
+    share = session.query(models.SharedDashboard).filter_by(token="purgeboth0001").one()
+    assert share.dataset_id is None and share.dashboard_id is None
+    session.close()
+
+
 def test_integrity_error_is_not_reported_as_a_dead_database(client):
     """A constraint violation means the database worked. Reporting it as
     503 'cannot reach its database' sends readers to inspect DATABASE_URL."""
