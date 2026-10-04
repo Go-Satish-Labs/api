@@ -14,6 +14,7 @@ __pycache__/
 *.db
 *.sqlite
 *.sqlite3
+*.log
 storage_data/
 test_storage_data/
 
