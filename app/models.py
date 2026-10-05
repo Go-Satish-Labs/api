@@ -37,6 +37,12 @@ class Workspace(Base):
     id = Column(String, primary_key=True, default=gen_uuid)
     name = Column(String, nullable=False, default="My Workspace")
     owner_id = Column(String, ForeignKey("users.id"), nullable=False)
+    # How many datasets have ever been uploaded here, including ones since
+    # deleted. The quota is metered on this rather than on the current row
+    # count, so the limit cannot be churned by upload-delete-upload: a user at
+    # the cap who deletes a file has not earned a slot back, because the work
+    # they did with that slot still counts against the plan.
+    datasets_created = Column(Integer, nullable=False, default=0, server_default="0")
     created_at = Column(DateTime, default=datetime.utcnow)
 
     owner = relationship("User", back_populates="workspaces")

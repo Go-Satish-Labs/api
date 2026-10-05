@@ -160,10 +160,38 @@ def init_engine() -> dict:
     return database_status()
 
 
+def _apply_idempotent_migrations() -> None:
+    """Add columns that create_all cannot.
+
+    Base.metadata.create_all only creates tables that do not exist; it never
+    alters one that does. A column added to a model later therefore has to be
+    added to the live table explicitly or every query against it fails. Each
+    statement is written to be safe to run on every boot.
+    """
+    statements = [
+        # Added for metered dataset quota: see Workspace.datasets_created.
+        "ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS "
+        "datasets_created INTEGER NOT NULL DEFAULT 0",
+    ]
+    with engine.begin() as conn:
+        for statement in statements:
+            try:
+                conn.execute(text(statement))
+            except Exception as exc:  # noqa: BLE001
+                # A failed migration must not take the API down; the feature
+                # that needs it degrades instead.
+                print(
+                    f"[database] migration skipped ({type(exc).__name__}: "
+                    f"{str(exc)[:160]})",
+                    file=sys.stderr,
+                )
+
+
 def create_tables() -> tuple[bool, str | None]:
     """Create any missing tables on the active engine."""
     try:
         Base.metadata.create_all(bind=engine)
+        _apply_idempotent_migrations()
         return True, None
     except Exception as exc:  # noqa: BLE001
         message = f"{type(exc).__name__}: {str(exc).strip()[:400]}"

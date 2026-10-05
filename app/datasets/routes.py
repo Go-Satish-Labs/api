@@ -64,6 +64,9 @@ async def upload_dataset(
         status="uploaded",
     )
     db.add(dataset)
+    # Count the upload, not the row: the quota is metered on how many datasets
+    # have ever been uploaded, so a deleted one does not free a slot.
+    ws.datasets_created = (ws.datasets_created or 0) + 1
     db.flush()
 
     try:
