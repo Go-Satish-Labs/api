@@ -17,7 +17,7 @@ def register(payload: schemas.RegisterRequest, db: Session = Depends(get_db)):
         raise HTTPException(status.HTTP_410_GONE, "Register with Firebase from the client application")
     existing = db.query(models.User).filter(models.User.email == payload.email).first()
     if existing:
-        raise HTTPException(status.HTTP_409_CONFLICT, "An account with this email already exists")
+        raise HTTPException(status.HTTP_409_CONFLICT, "An account with this email already exists. Try signing in instead.")
 
     # Password hashing is handled here via passlib/bcrypt (blueprint section 12:
     # "do not build custom password storage" -> we don't invent our own crypto,

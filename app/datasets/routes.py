@@ -22,13 +22,22 @@ router = APIRouter(prefix="/datasets", tags=["datasets"])
 def _validate_upload(file: UploadFile, content: bytes):
     ext = os.path.splitext(file.filename or "")[1].lower()
     if ext not in settings.ALLOWED_EXTENSIONS:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST,
-                             f"Unsupported file type '{ext}'. Allowed: {', '.join(settings.ALLOWED_EXTENSIONS)}")
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            f"We can't read '{ext}' files. Upload one of: "
+            f"{', '.join(e.lstrip('.') for e in settings.ALLOWED_EXTENSIONS)}.",
+        )
     if len(content) > settings.MAX_UPLOAD_MB * 1024 * 1024:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST,
-                             f"File too large. Max {settings.MAX_UPLOAD_MB} MB allowed.")
+        raise HTTPException(
+            status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            f"That file is larger than {settings.MAX_UPLOAD_MB} MB. "
+            f"Try splitting it or removing unneeded columns.",
+        )
     if len(content) == 0:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Uploaded file is empty")
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "That file is empty, so there is nothing to analyse.",
+        )
 
 
 @router.post("", response_model=schemas.DatasetOut, status_code=201)
@@ -41,10 +50,26 @@ async def upload_dataset(
     plan = get_plan(user, db)
     limits = plan_limits(plan)
 
-    dataset_count = db.query(models.Dataset).filter(models.Dataset.workspace_id == ws.id).count()
-    if dataset_count >= limits["max_datasets"]:
-        raise HTTPException(status.HTTP_403_FORBIDDEN,
-                             f"Dataset limit reached for the {plan} plan ({limits['max_datasets']}). Upgrade to add more.")
+    # Enforced on the same metered counter the quota bar shows. Counting live
+    # rows here while the meter counted uploads would mean the limit never
+    # actually bites: delete a file, the row count drops, and the upload goes
+    # through despite the meter showing no headroom.
+    if (ws.datasets_created or 0) < db.query(models.Dataset).filter(
+        models.Dataset.workspace_id == ws.id
+    ).count():
+        # Self-heal a workspace created before the counter existed.
+        ws.datasets_created = db.query(models.Dataset).filter(
+            models.Dataset.workspace_id == ws.id
+        ).count()
+        db.commit()
+        db.refresh(ws)
+
+    if (ws.datasets_created or 0) >= limits["max_datasets"]:
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            f"You've used all {limits['max_datasets']} datasets on the {plan} plan. "
+            f"Upgrade to add more.",
+        )
 
     content = await file.read()
     _validate_upload(file, content)
