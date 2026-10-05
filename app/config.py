@@ -44,6 +44,12 @@ class Settings(BaseSettings):
     AUTH_MODE: str = "firebase"
     FIREBASE_PROJECT_ID: str = ""
 
+    # Hold new accounts out of the product until they have proved they own the
+    # inbox. Enforced from the verified Firebase token, so it cannot be bypassed
+    # by calling the API directly. Google and GitHub sign-ins are unaffected:
+    # Firebase already marks those addresses verified.
+    REQUIRE_EMAIL_VERIFICATION: bool = True
+
     # Free plan limits
     FREE_MAX_DATASETS: int = 3
     FREE_MAX_STORAGE_MB: int = 50

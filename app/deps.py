@@ -36,6 +36,20 @@ def get_or_create_firebase_user(db: Session, uid: str, email: str) -> models.Use
             db.refresh(user)
         return user
 
+    # An account may already exist for this address from before Firebase
+    # sign-in was in use, or from a provider that did not record a uid.
+    # users.email is UNIQUE, so blindly inserting here raised an IntegrityError
+    # and the person was told their data "conflicts with existing data" - which
+    # read as being locked out of an account they had already made. Firebase
+    # has just verified they own the address, so the existing row is theirs:
+    # attach the uid rather than trying to create a second one.
+    orphan = db.query(models.User).filter(models.User.email == email).first()
+    if orphan:
+        orphan.firebase_uid = uid
+        db.commit()
+        db.refresh(orphan)
+        return orphan
+
     try:
         user = models.User(email=email, firebase_uid=uid)
         db.add(user)

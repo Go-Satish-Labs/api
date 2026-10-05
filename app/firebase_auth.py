@@ -19,4 +19,20 @@ def verify_firebase_token(token: str) -> dict[str, str]:
     email = claims.get("email")
     if not uid or not email:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Firebase session has no verified email")
-    return {"uid": uid, "email": email.lower()}
+
+    # Email verification is enforced here rather than in the client, because a
+    # client-side check is only a suggestion - anyone can call the API
+    # directly. Firebase puts `email_verified` in the token, so this cannot be
+    # forged without the signing key. Google and GitHub sign-ins arrive with
+    # it already true, so only password sign-ups are held back.
+    if settings.REQUIRE_EMAIL_VERIFICATION and not claims.get("email_verified"):
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            "Verify your email address to continue. Check your inbox for the link we sent.",
+        )
+
+    return {
+        "uid": uid,
+        "email": email.lower(),
+        "email_verified": str(bool(claims.get("email_verified"))).lower(),
+    }
