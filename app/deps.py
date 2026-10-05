@@ -2,6 +2,7 @@ from datetime import datetime
 
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from . import models
@@ -13,24 +14,51 @@ from .firebase_auth import verify_firebase_token
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
 
 
+def get_or_create_firebase_user(db: Session, uid: str, email: str) -> models.User:
+    """Find the account behind a verified Firebase identity, creating it once.
+
+    Split out from get_current_user so the lazy-creation path can be tested
+    directly - it is the one write here that can fail for a reason that has
+    nothing to do with the request being wrong.
+
+    Two authenticated requests racing on a first load (the client fires
+    /auth/me, /datasets and /workspace/usage together) both find no user and
+    both insert. users.firebase_uid is UNIQUE, so one loses with an
+    IntegrityError. That is the constraint doing its job, not a conflict with
+    anything the user did, so the loser re-reads the row the winner created
+    and proceeds instead of failing a sign-in that actually succeeded.
+    """
+    user = db.query(models.User).filter(models.User.firebase_uid == uid).first()
+    if user:
+        if user.email != email:
+            user.email = email
+            db.commit()
+            db.refresh(user)
+        return user
+
+    try:
+        user = models.User(email=email, firebase_uid=uid)
+        db.add(user)
+        db.flush()
+        db.add(models.Workspace(name=f"{email.split('@')[0]}'s Workspace", owner_id=user.id))
+        db.add(models.Subscription(user_id=user.id, plan="free", status="active", provider="firebase"))
+        db.commit()
+        db.refresh(user)
+        return user
+    except IntegrityError:
+        db.rollback()
+        winner = db.query(models.User).filter(models.User.firebase_uid == uid).first()
+        if not winner:
+            raise
+        return winner
+
+
 def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)) -> models.User:
     """Every protected route depends on this. The identity always comes from
     a server-verified JWT, never from a client-supplied user id."""
     if settings.AUTH_MODE == "firebase":
         claims = verify_firebase_token(token)
-        uid, email = claims["uid"], claims["email"]
-        user = db.query(models.User).filter(models.User.firebase_uid == uid).first()
-        if not user:
-            user = models.User(email=email, firebase_uid=uid)
-            db.add(user)
-            db.flush()
-            db.add(models.Workspace(name=f"{email.split('@')[0]}'s Workspace", owner_id=user.id))
-            db.add(models.Subscription(user_id=user.id, plan="free", status="active", provider="firebase"))
-            db.commit()
-            db.refresh(user)
-        elif user.email != email:
-            user.email = email
-            db.commit()
+        user = get_or_create_firebase_user(db, claims["uid"], claims["email"])
     else:
         user_id = decode_access_token(token)
         if not user_id:
