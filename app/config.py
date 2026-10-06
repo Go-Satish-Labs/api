@@ -34,6 +34,10 @@ class Settings(BaseSettings):
     # service_role key (never the anon key). Never expose this to the client.
     SUPABASE_SERVICE_ROLE_KEY: str = ""
     STORAGE_DIR: str = "datasets"
+    # Profile pictures live in their own bucket so they never collide with
+    # dataset files and can be deleted independently.
+    PROFILE_PIC_BUCKET: str = "profile-pics"
+    MAX_PROFILE_PIC_MB: int = 2
     CORS_ORIGINS: str = (
         "http://localhost:5173,http://127.0.0.1:5173,"
         "https://analytrix-mocha.vercel.app"

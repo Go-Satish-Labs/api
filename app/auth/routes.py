@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 
@@ -7,6 +7,7 @@ from ..database import get_db
 from ..deps import get_current_user, get_plan
 from ..config import settings
 from ..security import create_access_token, hash_password, verify_password, hash_security_answer, verify_security_answer
+from ..storage.local_storage import save_profile_pic, delete_profile_pic
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -61,7 +62,8 @@ def me(user: models.User = Depends(get_current_user), db: Session = Depends(get_
         email=user.email,
         plan=get_plan(user, db),
         role=user.role,
-        has_security_question=bool(user.security_question)
+        has_security_question=bool(user.security_question),
+        profile_pic_url=user.profile_pic_url,
     )
 
 
@@ -80,7 +82,61 @@ def update_security_question(
         email=user.email,
         plan=get_plan(user, db),
         role=user.role,
-        has_security_question=bool(user.security_question)
+        has_security_question=bool(user.security_question),
+        profile_pic_url=user.profile_pic_url,
+    )
+
+
+@router.post("/me/profile-pic", response_model=schemas.UploadProfilePicResponse)
+async def upload_profile_pic(
+    request: Request,
+    user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Upload a profile picture for the signed-in user.
+
+    Validates size and type here so a 2 MB JPEG is the ceiling, not a
+    server-side surprise.
+    """
+    content_type = request.headers.get("content-type", "")
+    if not content_type.startswith("image/"):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Please upload an image file (jpg, png, webp).")
+
+    content = await request.body()
+    max_bytes = settings.MAX_PROFILE_PIC_MB * 1024 * 1024
+    if len(content) > max_bytes:
+        raise HTTPException(
+            status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            f"Profile picture must be {settings.MAX_PROFILE_PIC_MB} MB or smaller.",
+        )
+
+    # Remove the previous picture if there is one, so a re-upload does not
+    # leave orphaned files in storage.
+    if user.profile_pic_url:
+        delete_profile_pic(user.profile_pic_url)
+
+    url = save_profile_pic(user.id, content_type, content)
+    user.profile_pic_url = url
+    db.commit()
+    return schemas.UploadProfilePicResponse(profile_pic_url=url)
+
+
+@router.delete("/me/profile-pic", response_model=schemas.UserOut)
+def delete_profile_pic_endpoint(
+    user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    if user.profile_pic_url:
+        delete_profile_pic(user.profile_pic_url)
+    user.profile_pic_url = None
+    db.commit()
+    return schemas.UserOut(
+        id=user.id,
+        email=user.email,
+        plan=get_plan(user, db),
+        role=user.role,
+        has_security_question=bool(user.security_question),
+        profile_pic_url=None,
     )
 
 

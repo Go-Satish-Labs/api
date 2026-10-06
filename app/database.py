@@ -172,6 +172,14 @@ def _apply_idempotent_migrations() -> None:
         # Added for metered dataset quota: see Workspace.datasets_created.
         "ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS "
         "datasets_created INTEGER NOT NULL DEFAULT 0",
+        # Added for security question/answer on the User model.
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS "
+        "security_question VARCHAR",
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS "
+        "security_answer_hash VARCHAR",
+        # Added for profile picture upload.
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS "
+        "profile_pic_url VARCHAR",
     ]
     with engine.begin() as conn:
         for statement in statements:

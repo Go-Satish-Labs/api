@@ -51,6 +51,32 @@ def delete_file(stored_path: str) -> None:
         pass
 
 
+def save_profile_pic(user_id: str, original_filename: str, content: bytes) -> str:
+    """Save a profile picture for a user. Returns the public URL.
+
+    Stored under a dedicated profile-pics bucket so it never collides with
+    dataset files, and the path is scoped to the user.
+    """
+    import imghdr
+
+    ext = os.path.splitext(original_filename)[1].lower() or ".jpg"
+    safe_name = f"{user_id}/{uuid.uuid4().hex}{ext}"
+    bucket = settings.PROFILE_PIC_BUCKET
+    _get_client().storage.from_(bucket).upload(safe_name, content)
+    try:
+        return _get_client().storage.from_(bucket).get_public_url(safe_name)
+    except Exception:
+        return safe_name
+
+
+def delete_profile_pic(stored_path: str) -> None:
+    bucket = settings.PROFILE_PIC_BUCKET
+    try:
+        _get_client().storage.from_(bucket).remove([stored_path])
+    except Exception:
+        pass
+
+
 def workspace_storage_used_bytes(workspace_id: str) -> int:
     try:
         files = _get_client().storage.from_(settings.STORAGE_DIR).list(workspace_id)

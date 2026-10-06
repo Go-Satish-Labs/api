@@ -28,6 +28,7 @@ class UserOut(BaseModel):
     plan: str
     role: str = "member"
     has_security_question: bool = False
+    profile_pic_url: Optional[str] = None
     class Config:
         from_attributes = True
 
@@ -57,6 +58,10 @@ class VerifySecurityAnswerResponse(BaseModel):
 class UpdateSecurityQuestionRequest(BaseModel):
     security_question: str = Field(min_length=1, max_length=200)
     security_answer: str = Field(min_length=1, max_length=200)
+
+
+class UploadProfilePicResponse(BaseModel):
+    profile_pic_url: str
 
 
 # ---------- Workspace ----------
