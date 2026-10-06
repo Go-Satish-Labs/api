@@ -52,15 +52,26 @@ def delete_file(stored_path: str) -> None:
 
 
 def save_profile_pic(user_id: str, ext: str, content: bytes) -> str:
+    """Upload to private bucket. Stores the object path (not a URL)."""
     safe_name = f"{user_id}/{uuid.uuid4().hex}{ext}"
     bucket = settings.PROFILE_PIC_BUCKET
     _get_client().storage.from_(bucket).upload(safe_name, content)
+    # Return the storage path — callers fetch a signed URL on demand
+    return safe_name
+
+
+def get_profile_pic_signed_url(stored_path: str, expires_in: int = 3600) -> str | None:
+    """Return a signed URL valid for `expires_in` seconds, or None on failure."""
+    if not stored_path:
+        return None
+    bucket = settings.PROFILE_PIC_BUCKET
     try:
-        url = _get_client().storage.from_(bucket).get_public_url(safe_name)
-        # Supabase SDK sometimes appends a bare '?' — strip it
-        return url.rstrip('?').rstrip('&')
+        res = _get_client().storage.from_(bucket).create_signed_url(stored_path, expires_in)
+        if isinstance(res, dict):
+            return res.get("signedURL") or res.get("signedUrl")
+        return getattr(res, "signed_url", None)
     except Exception:
-        return safe_name
+        return None
 
 
 def delete_profile_pic(stored_path: str) -> None:

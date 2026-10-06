@@ -7,12 +7,14 @@ from ..database import get_db
 from ..deps import get_current_user, get_plan
 from ..config import settings
 from ..security import create_access_token, hash_password, verify_password, hash_security_answer, verify_security_answer
-from ..storage.local_storage import save_profile_pic, delete_profile_pic
+from ..storage.local_storage import save_profile_pic, delete_profile_pic, get_profile_pic_signed_url
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 
 def _user_out(user: models.User, db: Session) -> schemas.UserOut:
+    # profile_pic_url stores the storage path; resolve to a 1-hour signed URL
+    signed_pic = get_profile_pic_signed_url(user.profile_pic_url) if user.profile_pic_url else None
     return schemas.UserOut(
         id=user.id,
         email=user.email,
@@ -20,7 +22,7 @@ def _user_out(user: models.User, db: Session) -> schemas.UserOut:
         role=user.role,
         display_name=user.display_name,
         has_security_question=bool(user.security_question),
-        profile_pic_url=user.profile_pic_url,
+        profile_pic_url=signed_pic,
     )
 
 
@@ -119,10 +121,11 @@ async def upload_profile_pic(
 
     ext_map = {"image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp", "image/gif": ".gif"}
     ext = ext_map.get(content_type.split(";")[0].strip(), ".jpg")
-    url = save_profile_pic(user.id, ext, content)
-    user.profile_pic_url = url
+    stored_path = save_profile_pic(user.id, ext, content)
+    user.profile_pic_url = stored_path
     db.commit()
-    return schemas.UploadProfilePicResponse(profile_pic_url=url)
+    signed = get_profile_pic_signed_url(stored_path) or stored_path
+    return schemas.UploadProfilePicResponse(profile_pic_url=signed)
 
 
 @router.delete("/me/profile-pic", response_model=schemas.UserOut)
