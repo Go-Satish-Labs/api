@@ -180,6 +180,9 @@ def _apply_idempotent_migrations() -> None:
         # Added for profile picture upload.
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS "
         "profile_pic_url VARCHAR",
+        # Added for user display name.
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS "
+        "display_name VARCHAR",
     ]
     with engine.begin() as conn:
         for statement in statements:
