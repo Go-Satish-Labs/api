@@ -56,7 +56,13 @@ def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depend
 
 @router.get("/me", response_model=schemas.UserOut)
 def me(user: models.User = Depends(get_current_user), db: Session = Depends(get_db)):
-    return schemas.UserOut(id=user.id, email=user.email, plan=get_plan(user, db), role=user.role)
+    return schemas.UserOut(
+        id=user.id,
+        email=user.email,
+        plan=get_plan(user, db),
+        role=user.role,
+        has_security_question=bool(user.security_question)
+    )
 
 
 @router.patch("/me", response_model=schemas.UserOut)
@@ -69,7 +75,13 @@ def update_security_question(
     user.security_question = payload.security_question
     user.security_answer_hash = hash_security_answer(payload.security_answer)
     db.commit()
-    return schemas.UserOut(id=user.id, email=user.email, plan=get_plan(user, db), role=user.role)
+    return schemas.UserOut(
+        id=user.id,
+        email=user.email,
+        plan=get_plan(user, db),
+        role=user.role,
+        has_security_question=bool(user.security_question)
+    )
 
 
 # ---------- Forgot Password (Security Question/Answer Flow) ----------
@@ -78,10 +90,12 @@ def update_security_question(
 def get_security_question(payload: schemas.ForgotPasswordRequest, db: Session = Depends(get_db)):
     """Return the security question for the given email (if account exists and has one set)."""
     user = db.query(models.User).filter(models.User.email == payload.email).first()
-    if not user or not user.security_question:
-        # Do not reveal whether the email exists or has a security question.
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "No security question found for this account.")
-    return schemas.ForgotPasswordQuestionResponse(security_question=user.security_question, email=user.email)
+    if not user:
+        # Do not reveal whether the email exists.
+        return schemas.ForgotPasswordQuestionResponse(security_question=None, email=payload.email, has_security_question=False)
+    if not user.security_question:
+        return schemas.ForgotPasswordQuestionResponse(security_question=None, email=user.email, has_security_question=False)
+    return schemas.ForgotPasswordQuestionResponse(security_question=user.security_question, email=user.email, has_security_question=True)
 
 
 @router.post("/forgot-password/verify", response_model=schemas.VerifySecurityAnswerResponse)

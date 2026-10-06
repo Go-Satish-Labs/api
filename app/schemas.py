@@ -27,6 +27,7 @@ class UserOut(BaseModel):
     email: str
     plan: str
     role: str = "member"
+    has_security_question: bool = False
     class Config:
         from_attributes = True
 
@@ -37,8 +38,9 @@ class ForgotPasswordRequest(BaseModel):
 
 
 class ForgotPasswordQuestionResponse(BaseModel):
-    security_question: str
+    security_question: str | None
     email: str
+    has_security_question: bool
 
 
 class VerifySecurityAnswerRequest(BaseModel):
