@@ -22,6 +22,9 @@ class User(Base):
     role = Column(String, nullable=False, default="member")
     # Retained temporarily for legacy local-test accounts; Firebase users never use it.
     hashed_password = Column(String, nullable=True)
+    # Security question/answer for password reset verification
+    security_question = Column(String, nullable=True)
+    security_answer_hash = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
     workspaces = relationship("Workspace", back_populates="owner", cascade="all, delete-orphan")

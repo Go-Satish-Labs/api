@@ -8,6 +8,8 @@ from pydantic import BaseModel, EmailStr, Field
 class RegisterRequest(BaseModel):
     email: EmailStr
     password: str = Field(min_length=8)
+    security_question: str = Field(min_length=1, max_length=200)
+    security_answer: str = Field(min_length=1, max_length=200)
 
 
 class LoginRequest(BaseModel):
@@ -27,6 +29,32 @@ class UserOut(BaseModel):
     role: str = "member"
     class Config:
         from_attributes = True
+
+
+# ---------- Forgot Password ----------
+class ForgotPasswordRequest(BaseModel):
+    email: EmailStr
+
+
+class ForgotPasswordQuestionResponse(BaseModel):
+    security_question: str
+    email: str
+
+
+class VerifySecurityAnswerRequest(BaseModel):
+    email: EmailStr
+    security_answer: str = Field(min_length=1, max_length=200)
+
+
+class VerifySecurityAnswerResponse(BaseModel):
+    reset_triggered: bool
+    message: str
+
+
+# ---------- User Profile ----------
+class UpdateSecurityQuestionRequest(BaseModel):
+    security_question: str = Field(min_length=1, max_length=200)
+    security_answer: str = Field(min_length=1, max_length=200)
 
 
 # ---------- Workspace ----------

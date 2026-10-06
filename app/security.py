@@ -16,6 +16,16 @@ def verify_password(plain: str, hashed: str) -> bool:
     return pwd_context.verify(plain, hashed)
 
 
+def hash_security_answer(answer: str) -> str:
+    """Hash a security answer for storage."""
+    return pwd_context.hash(answer.lower().strip())
+
+
+def verify_security_answer(plain: str, hashed: str) -> bool:
+    """Verify a security answer against its hash."""
+    return pwd_context.verify(plain.lower().strip(), hashed)
+
+
 def create_access_token(subject: str) -> str:
     expire = datetime.utcnow() + timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
     payload = {"sub": subject, "exp": expire}

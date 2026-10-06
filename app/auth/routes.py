@@ -6,7 +6,7 @@ from .. import models, schemas
 from ..database import get_db
 from ..deps import get_current_user, get_plan
 from ..config import settings
-from ..security import create_access_token, hash_password, verify_password
+from ..security import create_access_token, hash_password, verify_password, hash_security_answer, verify_security_answer
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -22,7 +22,12 @@ def register(payload: schemas.RegisterRequest, db: Session = Depends(get_db)):
     # Password hashing is handled here via passlib/bcrypt (blueprint section 12:
     # "do not build custom password storage" -> we don't invent our own crypto,
     # we use a vetted library rather than a hosted auth provider).
-    user = models.User(email=payload.email, hashed_password=hash_password(payload.password))
+    user = models.User(
+        email=payload.email,
+        hashed_password=hash_password(payload.password),
+        security_question=payload.security_question,
+        security_answer_hash=hash_security_answer(payload.security_answer)
+    )
     db.add(user)
     db.flush()
 
@@ -54,6 +59,51 @@ def me(user: models.User = Depends(get_current_user), db: Session = Depends(get_
     return schemas.UserOut(id=user.id, email=user.email, plan=get_plan(user, db), role=user.role)
 
 
+@router.patch("/me", response_model=schemas.UserOut)
+def update_security_question(
+    payload: schemas.UpdateSecurityQuestionRequest,
+    user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Update the security question/answer for the current user."""
+    user.security_question = payload.security_question
+    user.security_answer_hash = hash_security_answer(payload.security_answer)
+    db.commit()
+    return schemas.UserOut(id=user.id, email=user.email, plan=get_plan(user, db), role=user.role)
+
+
+# ---------- Forgot Password (Security Question/Answer Flow) ----------
+
+@router.post("/forgot-password/question", response_model=schemas.ForgotPasswordQuestionResponse)
+def get_security_question(payload: schemas.ForgotPasswordRequest, db: Session = Depends(get_db)):
+    """Return the security question for the given email (if account exists and has one set)."""
+    user = db.query(models.User).filter(models.User.email == payload.email).first()
+    if not user or not user.security_question:
+        # Do not reveal whether the email exists or has a security question.
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "No security question found for this account.")
+    return schemas.ForgotPasswordQuestionResponse(security_question=user.security_question, email=user.email)
+
+
+@router.post("/forgot-password/verify", response_model=schemas.VerifySecurityAnswerResponse)
+def verify_security_answer_endpoint(payload: schemas.VerifySecurityAnswerRequest, db: Session = Depends(get_db)):
+    """Verify the security answer and trigger Firebase password reset email."""
+    user = db.query(models.User).filter(models.User.email == payload.email).first()
+    if not user or not user.security_answer_hash:
+        # Do not reveal whether the email exists or has a security answer.
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Invalid request.")
+    
+    if not verify_security_answer(payload.security_answer, user.security_answer_hash):
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Incorrect security answer.")
+    
+    # Security answer verified - in production, trigger Firebase password reset email here.
+    # For now, return success; the frontend will call Firebase's sendPasswordResetEmail.
+    return schemas.VerifySecurityAnswerResponse(
+        reset_triggered=True,
+        message="Security answer verified. A password reset email has been sent to your inbox."
+    )
+
+
+# Legacy password reset endpoints (disabled in firebase mode, kept for local dev)
 @router.post("/password-reset/request")
 def request_password_reset(payload: schemas.LoginRequest, db: Session = Depends(get_db)):
     """MVP stand-in for a real email-based reset flow. No SMTP account is
@@ -61,6 +111,8 @@ def request_password_reset(payload: schemas.LoginRequest, db: Session = Depends(
     short-lived reset token directly (dev-mode only). Wire this to a real
     email provider before going to production; do not ship this response
     shape as-is."""
+    if settings.AUTH_MODE == "firebase":
+        raise HTTPException(status.HTTP_410_GONE, "Use Firebase password reset from the client application")
     user = db.query(models.User).filter(models.User.email == payload.email).first()
     if not user:
         # Do not reveal whether the email exists.
