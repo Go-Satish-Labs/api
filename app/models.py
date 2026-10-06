@@ -25,6 +25,8 @@ class User(Base):
     # Security question/answer for password reset verification
     security_question = Column(String, nullable=True)
     security_answer_hash = Column(String, nullable=True)
+    # Display name set by the user (defaults to email prefix)
+    display_name = Column(String, nullable=True)
     # URL of the profile picture uploaded by the user (Supabase storage path).
     profile_pic_url = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)

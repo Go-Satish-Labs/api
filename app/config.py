@@ -78,6 +78,9 @@ class Settings(BaseSettings):
     OPENAI_API_KEY: str = ""
     ANTHROPIC_API_KEY: str = ""
 
+    MAX_PROFILE_PIC_MB: int = 2
+    PROFILE_PIC_BUCKET: str = "profile-pics"
+
     # Upload validation
     ALLOWED_EXTENSIONS: tuple = (".csv", ".xlsx", ".xls", ".txt", ".json", ".html", ".htm", ".xml")
     MAX_UPLOAD_MB: int = 25

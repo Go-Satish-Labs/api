@@ -27,6 +27,7 @@ class UserOut(BaseModel):
     email: str
     plan: str
     role: str = "member"
+    display_name: Optional[str] = None
     has_security_question: bool = False
     profile_pic_url: Optional[str] = None
     class Config:
@@ -55,6 +56,10 @@ class VerifySecurityAnswerResponse(BaseModel):
 
 
 # ---------- User Profile ----------
+class UpdateProfileRequest(BaseModel):
+    display_name: Optional[str] = Field(default=None, max_length=80)
+
+
 class UpdateSecurityQuestionRequest(BaseModel):
     security_question: str = Field(min_length=1, max_length=200)
     security_answer: str = Field(min_length=1, max_length=200)

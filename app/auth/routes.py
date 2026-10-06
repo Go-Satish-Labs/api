@@ -12,6 +12,18 @@ from ..storage.local_storage import save_profile_pic, delete_profile_pic
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 
+def _user_out(user: models.User, db: Session) -> schemas.UserOut:
+    return schemas.UserOut(
+        id=user.id,
+        email=user.email,
+        plan=get_plan(user, db),
+        role=user.role,
+        display_name=user.display_name,
+        has_security_question=bool(user.security_question),
+        profile_pic_url=user.profile_pic_url,
+    )
+
+
 @router.post("/register", response_model=schemas.TokenResponse, status_code=201)
 def register(payload: schemas.RegisterRequest, db: Session = Depends(get_db)):
     if settings.AUTH_MODE == "firebase":
@@ -57,14 +69,19 @@ def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depend
 
 @router.get("/me", response_model=schemas.UserOut)
 def me(user: models.User = Depends(get_current_user), db: Session = Depends(get_db)):
-    return schemas.UserOut(
-        id=user.id,
-        email=user.email,
-        plan=get_plan(user, db),
-        role=user.role,
-        has_security_question=bool(user.security_question),
-        profile_pic_url=user.profile_pic_url,
-    )
+    return _user_out(user, db)
+
+
+@router.patch("/me/profile", response_model=schemas.UserOut)
+def update_profile(
+    payload: schemas.UpdateProfileRequest,
+    user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    if payload.display_name is not None:
+        user.display_name = payload.display_name.strip() or None
+    db.commit()
+    return _user_out(user, db)
 
 
 @router.patch("/me", response_model=schemas.UserOut)
@@ -73,18 +90,10 @@ def update_security_question(
     user: models.User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """Update the security question/answer for the current user."""
     user.security_question = payload.security_question
     user.security_answer_hash = hash_security_answer(payload.security_answer)
     db.commit()
-    return schemas.UserOut(
-        id=user.id,
-        email=user.email,
-        plan=get_plan(user, db),
-        role=user.role,
-        has_security_question=bool(user.security_question),
-        profile_pic_url=user.profile_pic_url,
-    )
+    return _user_out(user, db)
 
 
 @router.post("/me/profile-pic", response_model=schemas.UploadProfilePicResponse)
@@ -93,11 +102,6 @@ async def upload_profile_pic(
     user: models.User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Upload a profile picture for the signed-in user.
-
-    Validates size and type here so a 2 MB JPEG is the ceiling, not a
-    server-side surprise.
-    """
     content_type = request.headers.get("content-type", "")
     if not content_type.startswith("image/"):
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Please upload an image file (jpg, png, webp).")
@@ -110,12 +114,12 @@ async def upload_profile_pic(
             f"Profile picture must be {settings.MAX_PROFILE_PIC_MB} MB or smaller.",
         )
 
-    # Remove the previous picture if there is one, so a re-upload does not
-    # leave orphaned files in storage.
     if user.profile_pic_url:
         delete_profile_pic(user.profile_pic_url)
 
-    url = save_profile_pic(user.id, content_type, content)
+    ext_map = {"image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp", "image/gif": ".gif"}
+    ext = ext_map.get(content_type.split(";")[0].strip(), ".jpg")
+    url = save_profile_pic(user.id, ext, content)
     user.profile_pic_url = url
     db.commit()
     return schemas.UploadProfilePicResponse(profile_pic_url=url)
@@ -130,14 +134,7 @@ def delete_profile_pic_endpoint(
         delete_profile_pic(user.profile_pic_url)
     user.profile_pic_url = None
     db.commit()
-    return schemas.UserOut(
-        id=user.id,
-        email=user.email,
-        plan=get_plan(user, db),
-        role=user.role,
-        has_security_question=bool(user.security_question),
-        profile_pic_url=None,
-    )
+    return _user_out(user, db)
 
 
 # ---------- Forgot Password (Security Question/Answer Flow) ----------

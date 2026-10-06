@@ -51,15 +51,12 @@ def delete_file(stored_path: str) -> None:
         pass
 
 
-def save_profile_pic(user_id: str, original_filename: str, content: bytes) -> str:
+def save_profile_pic(user_id: str, ext: str, content: bytes) -> str:
     """Save a profile picture for a user. Returns the public URL.
 
-    Stored under a dedicated profile-pics bucket so it never collides with
-    dataset files, and the path is scoped to the user.
+    `ext` is a file extension like '.jpg' or '.png', derived from the
+    request Content-Type header by the caller.
     """
-    import imghdr
-
-    ext = os.path.splitext(original_filename)[1].lower() or ".jpg"
     safe_name = f"{user_id}/{uuid.uuid4().hex}{ext}"
     bucket = settings.PROFILE_PIC_BUCKET
     _get_client().storage.from_(bucket).upload(safe_name, content)
