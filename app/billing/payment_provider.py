@@ -15,7 +15,6 @@ once a Razorpay account exists — no route or frontend code changes.
 """
 import hashlib
 import hmac
-import time
 import uuid
 from abc import ABC, abstractmethod
 
@@ -24,7 +23,7 @@ from ..config import settings
 
 class PaymentProvider(ABC):
     @abstractmethod
-    def create_order(self, amount_usd: int, receipt: str) -> dict:
+    def create_order(self, amount_paise: int, receipt: str) -> dict:
         ...
 
     @abstractmethod
@@ -44,12 +43,12 @@ class MockPaymentProvider(PaymentProvider):
 
     name = "mock"
 
-    def create_order(self, amount_usd: int, receipt: str) -> dict:
+    def create_order(self, amount_paise: int, receipt: str) -> dict:
         order_id = f"mock_order_{uuid.uuid4().hex[:12]}"
         return {
             "order_id": order_id,
-            "amount": amount_usd * 100,  # store in "cents" like Razorpay's paise convention
-            "currency": "USD",
+            "amount": amount_paise,
+            "currency": settings.PAYMENT_CURRENCY,
             "checkout_hint": (
                 "MOCK MODE: no real payment gateway is connected. Call "
                 "POST /billing/confirm with this order_id and any payment_id "
@@ -76,10 +75,10 @@ class RazorpayProvider(PaymentProvider):
         import razorpay  # imported lazily so the mock path never needs this dependency
         self.client = razorpay.Client(auth=(settings.RAZORPAY_KEY_ID, settings.RAZORPAY_KEY_SECRET))
 
-    def create_order(self, amount_usd: int, receipt: str) -> dict:
+    def create_order(self, amount_paise: int, receipt: str) -> dict:
         order = self.client.order.create({
-            "amount": amount_usd * 100,
-            "currency": "USD",
+            "amount": amount_paise,
+            "currency": settings.PAYMENT_CURRENCY,
             "receipt": receipt,
             "payment_capture": 1,
         })
@@ -91,15 +90,14 @@ class RazorpayProvider(PaymentProvider):
         }
 
     def verify_payment(self, order_id: str, payment_id: str, signature: str | None) -> bool:
-        try:
-            self.client.utility.verify_payment_signature({
-                "razorpay_order_id": order_id,
-                "razorpay_payment_id": payment_id,
-                "razorpay_signature": signature,
-            })
-            return True
-        except Exception:  # noqa: BLE001
+        if not order_id or not payment_id or not signature:
             return False
+        expected = hmac.new(
+            settings.RAZORPAY_KEY_SECRET.encode("utf-8"),
+            f"{order_id}|{payment_id}".encode("utf-8"),
+            hashlib.sha256,
+        ).hexdigest()
+        return hmac.compare_digest(expected, signature)
 
     def verify_webhook(self, body: bytes, signature: str | None) -> bool:
         if not signature or not settings.RAZORPAY_WEBHOOK_SECRET:
@@ -109,6 +107,11 @@ class RazorpayProvider(PaymentProvider):
 
 
 def get_payment_provider() -> PaymentProvider:
-    if settings.PAYMENT_PROVIDER == "razorpay" and settings.RAZORPAY_KEY_ID and settings.RAZORPAY_KEY_SECRET:
+    provider = settings.PAYMENT_PROVIDER.strip().lower()
+    if provider == "razorpay":
+        if not settings.RAZORPAY_KEY_ID or not settings.RAZORPAY_KEY_SECRET:
+            raise RuntimeError("PAYMENT_PROVIDER=razorpay requires RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET")
         return RazorpayProvider()
-    return MockPaymentProvider()
+    if provider == "mock":
+        return MockPaymentProvider()
+    raise RuntimeError(f"Unsupported PAYMENT_PROVIDER: {settings.PAYMENT_PROVIDER}")

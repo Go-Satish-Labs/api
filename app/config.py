@@ -66,6 +66,8 @@ class Settings(BaseSettings):
     PREMIUM_MAX_DASHBOARDS: int = 50
     PREMIUM_MAX_AI_QUESTIONS_PER_MONTH: int = 1000
     PREMIUM_PRICE_USD: int = 10
+    PREMIUM_PRICE_PAISE: int = 1000
+    PAYMENT_CURRENCY: str = "INR"
 
     # Payments
     PAYMENT_PROVIDER: str = "mock"  # "mock" (free, no account) or "razorpay" (real)

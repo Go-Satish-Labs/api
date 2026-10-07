@@ -18,8 +18,19 @@ def create_order(
     user: models.User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    provider = get_payment_provider()
-    order = provider.create_order(settings.PREMIUM_PRICE_USD, receipt=f"user:{user.id}")
+    if settings.PREMIUM_PRICE_PAISE < 100:
+        raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, "Configured payment amount must be at least 100 paise")
+
+    try:
+        provider = get_payment_provider()
+        order = provider.create_order(settings.PREMIUM_PRICE_PAISE, receipt=f"user:{user.id}")
+    except RuntimeError as exc:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Razorpay is not configured on the backend") from exc
+    except Exception as exc:
+        provider_status = getattr(exc, "status_code", None)
+        if provider_status == 401:
+            raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Razorpay authentication failed") from exc
+        raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, "Unable to create Razorpay order") from exc
 
     sub = db.query(models.Subscription).filter(models.Subscription.user_id == user.id).first()
     if not sub:
@@ -53,6 +64,9 @@ def confirm_payment(
     sub = db.query(models.Subscription).filter(models.Subscription.user_id == user.id).first()
     if not sub or sub.provider_order_id != payload.order_id:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Unknown order")
+
+    if not payload.order_id or not payload.payment_id or not payload.signature:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "order_id, payment_id, and signature are required")
 
     if not provider.verify_payment(payload.order_id, payload.payment_id, payload.signature):
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Payment verification failed")

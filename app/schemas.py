@@ -201,7 +201,7 @@ class CreateOrderResponse(BaseModel):
 class ConfirmPaymentRequest(BaseModel):
     order_id: str
     payment_id: str
-    signature: Optional[str] = None
+    signature: str
 
 
 class SubscriptionOut(BaseModel):
